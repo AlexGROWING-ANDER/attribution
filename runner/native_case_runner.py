@@ -246,6 +246,6 @@ def run_native(case,manifest,skill,sm,protocol,store,out,wall=850):
 def main():
  ap=argparse.ArgumentParser();ap.add_argument('--case',required=True);ap.add_argument('--version',default='v1');ap.add_argument('--out',required=True);ap.add_argument('--wall',type=int,default=850);a=ap.parse_args()
  case,manifest,skill,sm,protocol,store=load_inputs(a.case,a.version)
- result=run_native(case,manifest,skill,sm,protocol,store,Path(a.out),a.wall)
+ result=run_native(case,manifest,skill,sm,protocol,store,Path(a.out).resolve(),a.wall)  # 统一绝对路径，避免沙箱内相对路径错位
  print(json.dumps(result,ensure_ascii=True),flush=True)
 if __name__=='__main__':main()
