@@ -1,0 +1,432 @@
+{
+  "_meta": {
+    "architecture": "Agent-S2-Initial-Recovery",
+    "version": "0.1-trial",
+    "schema": "hierarchy",
+    "description": "Agent-S2 的项目级试标模板，依据框架日志进行模块映射，错误定义参考 Mobile-Agent-v3 分类；尚待独立确认，不代表上游官方分类",
+    "definition_source": "frameworks/mobile_agent_v3/taxonomy.json",
+    "module_evidence": [
+      "(RE)PLANNING / Generated DAG",
+      "PLAN / Next Action",
+      "REFLECTION",
+      "RAW GROUNDING MODEL RESPONSE",
+      "Mobile ACI / Controller"
+    ]
+  },
+  "zh": {
+    "framework": {
+      "label": "框架问题",
+      "description": "Framework 层面的缺陷，可以通过架构设计、模块逻辑或模块协同机制进行优化",
+      "l2": {
+        "manager": {
+          "label": "Manager／Planner（规划）",
+          "description": "高层计划、子任务DAG及重规划；依据HIGH LEVEL PLAN、Generated DAG、NEXT SUBTASK",
+          "l3": {
+            "wrong_goal": {
+              "label": "目标错误",
+              "description": "规划了错误的子目标或动作"
+            },
+            "premature_termination": {
+              "label": "过早终止",
+              "description": "任务未完成时就判定为完成"
+            },
+            "failure_to_terminate": {
+              "label": "未能终止",
+              "description": "任务已完成但未终止，继续执行多余操作"
+            },
+            "wrong_planning": {
+              "label": "规划错误",
+              "description": "规划策略错误，导致无法达成目标"
+            },
+            "incorrect_state_understanding": {
+              "label": "状态理解错误",
+              "description": "对当前应用状态的理解错误"
+            },
+            "insufficient_recovery_strategy": {
+              "label": "恢复策略不足",
+              "description": "错误发生后，缺乏有效的恢复策略"
+            },
+            "no_goal_state_verification": {
+              "label": "缺少目标状态验证",
+              "description": "没有显式验证当前状态是否满足目标状态"
+            }
+          }
+        },
+        "worker": {
+          "label": "Worker／Executor（执行决策）",
+          "description": "基于截图选择当前原子动作；依据PLAN的Screenshot Analysis、Next Action和Grounded Action",
+          "l3": {
+            "wrong_target": {
+              "label": "目标选择错误",
+              "description": "选择了错误的交互对象"
+            },
+            "wrong_action": {
+              "label": "动作类型错误",
+              "description": "选择了错误的动作类型"
+            },
+            "wrong_parameter": {
+              "label": "参数错误",
+              "description": "动作参数错误（如长按时间、滑动距离等）"
+            },
+            "insufficient_target_disambiguation": {
+              "label": "目标区分不足",
+              "description": "缺乏足够的目标区分机制"
+            },
+            "incorrect_state_understanding": {
+              "label": "状态理解错误",
+              "description": "对当前应用状态的理解错误"
+            },
+            "premature_termination": {
+              "label": "过早终止",
+              "description": "任务未完成时就判定为完成"
+            },
+            "failure_to_terminate": {
+              "label": "未能终止",
+              "description": "任务已完成但未终止，继续执行多余操作"
+            },
+            "insufficient_recovery_strategy": {
+              "label": "恢复策略不足",
+              "description": "错误发生后，缺乏有效的恢复策略"
+            },
+            "no_goal_state_verification": {
+              "label": "缺少目标状态验证",
+              "description": "没有显式验证当前状态是否满足目标状态"
+            },
+            "invalid_action_format": {
+              "label": "动作格式错误",
+              "description": "动作生成模块输出不符合约定的语法或必需结构，如JSON括号、引号不闭合或缺少必需字段，导致无法解析。可解析但参数值错误仍属参数错误；合法输出被适配器错误拒绝不属本项。"
+            }
+          }
+        },
+        "reflection": {
+          "label": "Reflection（Worker内部回顾）",
+          "description": "在后续轮次回顾此前动作并提供反馈；不是Mobile的A/B/C评估器",
+          "l3": {
+            "failure_detection_failure": {
+              "label": "失败检测失败",
+              "description": "未能检测到动作执行失败"
+            },
+            "wrong_outcome": {
+              "label": "结果判断错误",
+              "description": "错误判断了动作的结果"
+            },
+            "detected_failure_no_trigger": {
+              "label": "检测到失败但未触发恢复",
+              "description": "检测到失败但未触发恢复机制"
+            },
+            "insufficient_failure_feedback": {
+              "label": "失败反馈不足",
+              "description": "提供的失败反馈信息不足以支持有效恢复"
+            }
+          }
+        },
+        "grounding": {
+          "label": "Grounding（坐标定位）",
+          "description": "把正确的语义目标描述映射为坐标；依据RAW GROUNDING MODEL RESPONSE及坐标尺度",
+          "l3": {
+            "wrong_coordinate": {
+              "label": "坐标错误",
+              "description": "点击或滑动的坐标错误"
+            },
+            "insufficient_target_disambiguation": {
+              "label": "目标区分不足",
+              "description": "缺乏足够的目标区分机制"
+            }
+          }
+        },
+        "controller": {
+          "label": "Controller（设备执行）",
+          "description": "设备截图、坐标映射、文本编码及动作传输；需控制层证据，不能仅凭页面无变化归责",
+          "l3": {
+            "screenshot_failure": {
+              "label": "截图失败",
+              "description": "无法获取设备截图"
+            },
+            "coordinate_mismatch": {
+              "label": "坐标映射错误",
+              "description": "坐标映射错误"
+            },
+            "text_encoding_error": {
+              "label": "文本编码错误",
+              "description": "文本编码错误"
+            },
+            "action_transmission_failure": {
+              "label": "动作传输失败",
+              "description": "动作传输失败"
+            }
+          }
+        }
+      }
+    },
+    "app": {
+      "label": "App问题",
+      "description": "App 自身的异常行为，非 Framework 能力不足导致",
+      "l2": {
+        "app_abnormal": {
+          "label": "App异常",
+          "description": "App 自身的异常行为",
+          "l3": {
+            "operation_no_response": {
+              "label": "操作无响应",
+              "description": "Agent 执行了正确操作，但 App 无任何响应"
+            },
+            "incorrect_navigation": {
+              "label": "跳转错误",
+              "description": "Agent 执行了正确操作，但 App 跳转到了非预期页面"
+            },
+            "unexpected_popup": {
+              "label": "意外弹窗",
+              "description": "非预期的系统或应用弹窗打断了任务"
+            },
+            "page_load_timeout": {
+              "label": "页面加载超时",
+              "description": "页面持续处于加载状态，无法进入可交互状态"
+            },
+            "app_crash": {
+              "label": "应用崩溃",
+              "description": "应用闪退或被系统强制关闭"
+            },
+            "state_reversal": {
+              "label": "状态回退",
+              "description": "之前已完成的操作结果被非预期地撤销"
+            }
+          }
+        }
+      }
+    },
+    "precondition": {
+      "label": "预置问题",
+      "description": "任务所需账号、内容、功能、匹配结果或业务条件不满足；需有可核查证据，不等同于App异常",
+      "l2": {
+        "account_permission": {
+          "label": "账号／权限限制",
+          "l3": {}
+        },
+        "insufficient_content": {
+          "label": "目标内容不足",
+          "l3": {}
+        },
+        "unavailable_option": {
+          "label": "指定功能／选项不可用",
+          "l3": {}
+        },
+        "no_matching_result": {
+          "label": "无符合条件的结果",
+          "l3": {}
+        },
+        "capacity_business_limit": {
+          "label": "容量／业务规则限制",
+          "l3": {}
+        }
+      }
+    }
+  },
+  "en": {
+    "framework": {
+      "label": "Framework Issue",
+      "description": "Deficiencies at the Framework level that can be optimized through architecture design, module logic, or module coordination mechanisms",
+      "l2": {
+        "manager": {
+          "label": "Manager / Planner",
+          "description": "High-level plan, subtask DAG and replanning",
+          "l3": {
+            "wrong_goal": {
+              "label": "Wrong Goal",
+              "description": "Planned incorrect subgoal or action"
+            },
+            "premature_termination": {
+              "label": "Premature Termination",
+              "description": "Determined task as completed before it was actually done"
+            },
+            "failure_to_terminate": {
+              "label": "Failure to Terminate",
+              "description": "Task was completed but did not terminate, continued executing unnecessary operations"
+            },
+            "wrong_planning": {
+              "label": "Wrong Planning",
+              "description": "Planning strategy error, preventing goal achievement"
+            },
+            "incorrect_state_understanding": {
+              "label": "Incorrect State Understanding",
+              "description": "Incorrect understanding of current application state"
+            },
+            "insufficient_recovery_strategy": {
+              "label": "Insufficient Recovery Strategy",
+              "description": "Lacked effective recovery strategy after error occurred"
+            },
+            "no_goal_state_verification": {
+              "label": "No Goal-State Verification",
+              "description": "Did not explicitly verify whether current state satisfies goal state"
+            }
+          }
+        },
+        "worker": {
+          "label": "Worker / Executor",
+          "description": "Screenshot understanding and atomic action decisions",
+          "l3": {
+            "wrong_target": {
+              "label": "Wrong Target",
+              "description": "Selected incorrect interaction target"
+            },
+            "wrong_action": {
+              "label": "Wrong Action",
+              "description": "Selected incorrect action type"
+            },
+            "wrong_parameter": {
+              "label": "Wrong Parameter",
+              "description": "Action parameter error (e.g., long press duration, swipe distance)"
+            },
+            "insufficient_target_disambiguation": {
+              "label": "Insufficient Target Disambiguation",
+              "description": "Lacked sufficient target disambiguation mechanism"
+            },
+            "incorrect_state_understanding": {
+              "label": "Incorrect State Understanding",
+              "description": "Incorrect understanding of current application state"
+            },
+            "premature_termination": {
+              "label": "Premature Termination",
+              "description": "Determined task as completed before it was actually done"
+            },
+            "failure_to_terminate": {
+              "label": "Failure to Terminate",
+              "description": "Task was completed but did not terminate, continued executing unnecessary operations"
+            },
+            "insufficient_recovery_strategy": {
+              "label": "Insufficient Recovery Strategy",
+              "description": "Lacked effective recovery strategy after error occurred"
+            },
+            "no_goal_state_verification": {
+              "label": "No Goal-State Verification",
+              "description": "Did not explicitly verify whether current state satisfies goal state"
+            },
+            "invalid_action_format": {
+              "label": "Invalid Action Format",
+              "description": "The action-generating module emits invalid action syntax or required structure, such as unclosed JSON delimiters or missing mandatory fields, preventing parsing. Parseable but incorrect argument values remain Wrong Parameter; adapter rejection of valid output is excluded."
+            }
+          }
+        },
+        "reflection": {
+          "label": "Reflection (within Worker)",
+          "description": "Reviews preceding actions on subsequent turns",
+          "l3": {
+            "failure_detection_failure": {
+              "label": "Failure Detection Failure",
+              "description": "Failed to detect that action execution failed"
+            },
+            "wrong_outcome": {
+              "label": "Wrong Outcome",
+              "description": "Incorrectly judged the action result"
+            },
+            "detected_failure_no_trigger": {
+              "label": "Detected Failure No Trigger",
+              "description": "Detected failure but did not trigger recovery mechanism"
+            },
+            "insufficient_failure_feedback": {
+              "label": "Insufficient Failure Feedback",
+              "description": "Provided insufficient failure feedback to support effective recovery"
+            }
+          }
+        },
+        "grounding": {
+          "label": "Grounding",
+          "description": "Maps a correct semantic target to coordinates",
+          "l3": {
+            "wrong_coordinate": {
+              "label": "Wrong Coordinate",
+              "description": "Click or swipe coordinate was incorrect"
+            },
+            "insufficient_target_disambiguation": {
+              "label": "Insufficient Target Disambiguation",
+              "description": "Lacked sufficient target disambiguation mechanism"
+            }
+          }
+        },
+        "controller": {
+          "label": "Controller",
+          "description": "Device screenshot, mapping, encoding and action transmission; requires device evidence",
+          "l3": {
+            "screenshot_failure": {
+              "label": "Screenshot Failure",
+              "description": "Unable to capture device screenshot"
+            },
+            "coordinate_mismatch": {
+              "label": "Coordinate Mismatch",
+              "description": "Coordinate mapping error"
+            },
+            "text_encoding_error": {
+              "label": "Text Encoding Error",
+              "description": "Text encoding error"
+            },
+            "action_transmission_failure": {
+              "label": "Action Transmission Failure",
+              "description": "Action transmission failure"
+            }
+          }
+        }
+      }
+    },
+    "app": {
+      "label": "App Issue",
+      "description": "Abnormal App behavior, not caused by Framework capability deficiencies",
+      "l2": {
+        "app_abnormal": {
+          "label": "App Abnormal",
+          "description": "Abnormal behavior of the App itself",
+          "l3": {
+            "operation_no_response": {
+              "label": "Operation No Response",
+              "description": "Agent executed correct operation, but App had no response"
+            },
+            "incorrect_navigation": {
+              "label": "Incorrect Navigation",
+              "description": "Agent executed correct operation, but App navigated to unexpected page"
+            },
+            "unexpected_popup": {
+              "label": "Unexpected Popup",
+              "description": "Unexpected system or app popup interrupted the task"
+            },
+            "page_load_timeout": {
+              "label": "Page Load Timeout",
+              "description": "Page remained in loading state, unable to enter interactive state"
+            },
+            "app_crash": {
+              "label": "App Crash",
+              "description": "Application crashed or was forcibly closed by system"
+            },
+            "state_reversal": {
+              "label": "State Reversal",
+              "description": "Previously completed operation results were unexpectedly reverted"
+            }
+          }
+        }
+      }
+    },
+    "precondition": {
+      "label": "Task Precondition Issue",
+      "description": "An evidenced unmet prerequisite involving account access, content, features, matching results, or business limits.",
+      "l2": {
+        "account_permission": {
+          "label": "Account / Permission Restriction",
+          "l3": {}
+        },
+        "insufficient_content": {
+          "label": "Insufficient Target Content",
+          "l3": {}
+        },
+        "unavailable_option": {
+          "label": "Required Feature / Option Unavailable",
+          "l3": {}
+        },
+        "no_matching_result": {
+          "label": "No Matching Result",
+          "l3": {}
+        },
+        "capacity_business_limit": {
+          "label": "Capacity / Business Rule Restriction",
+          "l3": {}
+        }
+      }
+    }
+  }
+}

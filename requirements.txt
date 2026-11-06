@@ -1,0 +1,3 @@
+jsonschema>=4.20
+python-dotenv>=1.0
+psutil>=5.9

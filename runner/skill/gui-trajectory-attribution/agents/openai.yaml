@@ -1,0 +1,4 @@
+interface:
+  display_name: "GUI轨迹归因"
+  short_description: "结合完整轨迹与截图追查主要根因，区分框架模块、执行适配与预置问题"
+  default_prompt: "使用 $gui-trajectory-attribution 分析指定 attempt 的图文轨迹，给出可追溯的主要根因、错误步骤及恢复机会"
