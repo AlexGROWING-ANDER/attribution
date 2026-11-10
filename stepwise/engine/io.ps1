@@ -22,6 +22,38 @@ function References($value) {
   }
  } elseif($value -is [System.Collections.IEnumerable] -and $value -isnot [string]) {foreach($v in $value){References $v}}
 }
+function Assert-RevisionFiles($steps) {
+ $allowed=@($steps|ForEach-Object {'revision_{0:D3}.json' -f [int]$_})
+ foreach($file in Get-ChildItem (Join-Path $work 'step_judgments') -Filter 'revision_*.json' -File) {
+  if($allowed -cnotcontains $file.Name){throw ('Unexpected revision file: '+$file.Name)}
+ }
+}
+function Read-CheckedStep([int]$step,$known) {
+ $original=Read-Json (Join-Path $work ('step_judgments/step_{0:D3}.json' -f $step))
+ $path=Join-Path $work ('step_judgments/revision_{0:D3}.json' -f $step)
+ if(-not (Test-Path $path)){return $original}
+ $revised=Read-Json $path
+ Require-Fields $revised @('step','verdict','summary','evidence')
+ if((($revised.step -isnot [int]) -and ($revised.step -isnot [long])) -or $revised.step -ne $step){throw ('Revision step mismatch: '+$step)}
+ if($revised.verdict -cne $original.verdict){throw ('Step '+$step+' revision cannot change the original verdict; append observations and explain them in summary/limitations')}
+ if($revised.summary -isnot [string] -or [string]::IsNullOrWhiteSpace($revised.summary)){throw 'Revision summary must be a nonempty string'}
+ if($revised.evidence -isnot [array] -or @($revised.evidence).Count -eq 0){throw 'Revision evidence must be a nonempty JSON array'}
+ $prior=@($original.evidence)
+ if($revised.evidence.Count -lt $prior.Count){throw ('Step '+$step+' revision removed original evidence; restore the original prefix and append new observations')}
+ for($j=0;$j -lt $revised.evidence.Count;$j++) {
+  $ev=$revised.evidence[$j]
+  Require-Fields $ev @('source_id','phase','locator','observation')
+  foreach($field in @('source_id','phase','locator','observation')) {
+   if($ev.$field -isnot [string] -or $ev.$field.Length -eq 0){throw ('Revision evidence '+($j+1)+' field '+$field+' must be a nonempty string')}
+   if($j -lt $prior.Count -and $ev.$field -cne $prior[$j].$field) {
+    throw ('Original evidence E{0:D2}_{1} differs at {2}. Restore the original evidence prefix unchanged; append the corrected observation as a new item and explain it in summary/limitations.' -f $step,($j+1),$field)
+   }
+  }
+  if($known -cnotcontains $ev.source_id){throw 'Unknown revision source_id'}
+  if(@('before_action','after_action','decision','execution','metadata','final_observation','unknown') -cnotcontains $ev.phase){throw 'Invalid revision phase'}
+ }
+ return $revised
+}
 try {
  $index=Read-Json (Join-Path $work 'input_index.json')
  $steps=@($index.available_steps|Sort-Object)
@@ -51,6 +83,9 @@ try {
   @{saved=$value.step;evidence_ids=$ids}|ConvertTo-Json -Compress
  } elseif($Mode -eq 'global') {
   if($pending.Count){throw ('Unfinished steps: '+($pending -join ','))}
+  Assert-RevisionFiles $steps
+  $known=@($index.sources|ForEach-Object {$_.source_id})
+  foreach($step in $steps){$null=Read-CheckedStep ([int]$step) $known}
   $value=$Json|ConvertFrom-Json
   $schema=Read-Json (Join-Path $work 'global_summary.schema.json')
   Require-Fields $value @($schema.required)
@@ -59,12 +94,12 @@ try {
   '{"saved":"global_summary.json"}'
  } else {
   if($pending.Count){throw ('Unfinished steps: '+($pending -join ','))}
+  Assert-RevisionFiles $steps
+  $known=@($index.sources|ForEach-Object {$_.source_id})
   $global=Read-Json (Join-Path $work 'global_summary.json')
   $ids=@()
   foreach($step in $steps) {
-   $value=Read-Json (Join-Path $work ('step_judgments/step_{0:D3}.json' -f [int]$step))
-   $rev=Join-Path $work ('step_judgments/revision_{0:D3}.json' -f [int]$step)
-   if(Test-Path $rev){$value=Read-Json $rev}
+   $value=Read-CheckedStep ([int]$step) $known
    for($j=1;$j -le @($value.evidence).Count;$j++){$ids+=('E{0:D2}_{1}' -f [int]$step,$j)}
   }
   $bad=@(References $global|Where-Object {$ids -cnotcontains $_}|Select-Object -Unique)
