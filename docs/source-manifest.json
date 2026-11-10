@@ -152,5 +152,22 @@
       "assembly_logic_changed": false,
       "model_run_completed": false
     }
-  ]
+  ],
+  "transport_revision": {
+    "transport": "responses_passthrough",
+    "cli_version": "0.166.0",
+    "scope": "Replace local Responses/Chat conversion with native Responses forwarding; keep Skill, prompt, submission contracts and validator rules unchanged",
+    "gateway_probe": "HTTP 200, response.completed, deepseek-v4-1-flash-261017",
+    "no_chat_fallback": true,
+    "response_bytes_rebuilt": false,
+    "full_case_smoke": {
+      "cases": 2,
+      "materials_complete": 2,
+      "validated": 1,
+      "invalid": 1,
+      "invalid_reason": "additive revision modified original evidence prefix",
+      "chat_fallback_used": false,
+      "model": "deepseek-v4-1-flash-261017"
+    }
+  }
 }

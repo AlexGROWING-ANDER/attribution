@@ -40,3 +40,11 @@
 仅导出原生逐Step路径所需依赖。历史引擎中未暴露的单次大JSON、回修和研究编辑函数不属于新入口，不将它们当成受支持命令。
 
 RELEASE_MANIFEST记录本次导出的文件；source-manifest记录原文件哈希和可移植调整，两者不混称同一快照。
+
+## 原生Responses传输
+
+当前入口使用公司网关的Responses接口。本地送达记录器保留工具定义、消息结构、工具返回及响应事件，不再将请求改成Chat Completions，也不重建Responses事件。只恢复清单约定的图片字节，并将codex-auto-review模型名明确路由到同一DeepSeek模型。
+
+响应按原字节流转给CLI，审计仅提取HTTP状态、模型名、usage及完成事件。只有收到完整response.completed后，才把该次请求携带的材料记为送达；响应中断不计完整送达。上游HTTP错误保留原状态码，流中途出错则关闭当前连接，不再附加第二个HTTP响应。不自动回退Chat接口；请求和流重试由Codex配置控制。
+
+历史名称bridge_audit.json继续用于兼容已有审计工具。当前记录中transport为responses_passthrough、protocol_conversion为false，不能因文件名将它理解为协议转换桥。

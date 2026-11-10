@@ -12,7 +12,7 @@
 
 三框架共用输出协议，分别使用各自的职责映射和标签。运行器接收整理后的材料清单；接入其他框架时需核对当前attempt、日志步骤映射和网站图库范围，并非直接读取任意原始轨迹目录即可运行。
 
-当前启动Prompt为候选 `stepwise-prompt-r2`：Skill负责分析方法，启动文本提供任务与资源入口，独立提交协议定义工具及文件接口。已完成两例真实联调，最终校验2/2通过，各有一次局部纠错；完整60条尚未重跑，历史47/60属于旧Prompt。见 [Prompt说明](docs/PROMPT_CHANGES.md) 与 [两例联调](docs/SMOKE_TEST.md)。
+当前启动Prompt为 `stepwise-prompt-r2`：Skill负责分析方法，启动文本提供任务与资源入口，独立提交协议定义工具及文件接口。当前Responses透传已完成两例完整图文调用：一例validated，一例因追加证据修改了原记录而在组装时invalid。此前Chat转换版两例最终校验2/2通过，各有一次局部纠错，两轮分别记录；完整60条尚未重跑。见 [Prompt说明](docs/PROMPT_CHANGES.md) 与 [联调记录](docs/SMOKE_TEST.md)。
 
 ## 实际调用方式
 
@@ -20,11 +20,11 @@
 有界批跑器（默认8路，最多16路）
   → 每条案例独立启动 Codex CLI 0.166.0
   → 原生加载Skill，使用原生exec_command／view_image读取材料
-  → 本地协议桥：Responses ↔ Chat Completions
-  → 公司网关：deepseek-v4.1-flash
+  → 本地送达记录器：原生Responses请求／响应透传
+  → 公司网关 /responses：deepseek-v4.1-flash
 ```
 
-本地协议桥转换Responses与Chat Completions的工具和会话格式，恢复约定图片字节，并记录送达回执。审批请求仍由Codex发起，桥接将其明确路由到同一DeepSeek模型，这是项目的审批代理配置，不声称使用OpenAI官方审批模型。
+本地记录器不做Responses与Chat Completions转换，不改工具定义、工具返回或响应事件格式。它恢复约定图片字节，记录送达回执，并将网关的Responses流按原字节转回Codex。审批请求仍由Codex发起，记录器仅将审批模型名明确路由到同一DeepSeek模型，这是项目的审批代理配置，不声称使用OpenAI官方审批模型。网关内部如何实现Responses不属于本仓可观测范围。
 
 模型工作区只包含当前材料、Skill和提交工具。GT、评分文件和历史预测不进入工作区。送达回执能说明材料进入请求，不能证明模型已经注意并正确理解全部材料。
 
@@ -37,9 +37,8 @@ stepwise/
   prompts/stepwise_en.txt       统一启动Prompt模板
   protocols/submission_protocol.md  本轮工具、分步提交与完成约定
   engine/
-    native_engine.py           原生CLI、协议桥、材料送达记录
-    candidate_bridge.py        Responses与Chat工具协议转换
-    stream_transport_fast.py   流式响应与有界网络重试
+    native_engine.py           原生CLI、材料准备与送达记录
+    responses_transport.py     Responses请求与响应流原样转发
     stepwise_support_v2.py     分步结构、全局结构、程序组装
     stepwise_support_fast.py   实际启动Prompt和交互提速安排
     io.ps1                     步骤提交与基础检查
@@ -62,7 +61,7 @@ tests/                         离线检查，不向归因模型加载
 RELEASE_MANIFEST.json           导出运行文件的SHA256
 ```
 
-原仓库的 `runner/native_case_runner.py` 继续保留供历史对照，原说明移到 `docs/legacy-native-responses.md`。新入口使用 `stepwise/`，两种方式不能混称。
+原仓库的 `runner/native_case_runner.py` 继续保留供历史对照，原说明移到 `docs/legacy-native-responses.md`。新入口使用 `stepwise/`。历史Chat转换模块保留用于旧版对照测试，当前原生入口不加载它们，也不在失败时退回Chat接口。
 
 ## 安装与配置
 
@@ -74,7 +73,7 @@ python -m pip install -r requirements.txt
 Copy-Item config/stepwise.env.example config/stepwise.env
 ```
 
-在本地 `config/stepwise.env` 填写公司HTTPS Chat接口地址和密钥，该文件已被Git忽略。可选设置 `CODEX_BINARY`（JSON参数数组）、`CODEX_RUNTIME_DEP`（Codex PowerShell运行时目录）。未指定时按常规npm安装位置发现。
+在本地 `config/stepwise.env` 填写公司HTTPS Responses接口地址和密钥，该文件已被Git忽略。可填网关基础地址 `https://<gateway>/v1` 或完整 `/v1/responses`；旧配置若以 `/chat/completions` 结尾，入口会改用同一网关的 `/responses`，不会发送Chat请求。网关必须支持当前模型的原生Responses流和工具调用。可选设置 `CODEX_BINARY`（JSON参数数组）、`CODEX_RUNTIME_DEP`（Codex PowerShell运行时目录）。未指定时按常规npm安装位置发现。
 
 ## 输入材料
 
@@ -142,4 +141,4 @@ python -m unittest discover -s tests -v
 
 测试不请求付费API，不操作手机，不把测试样例送给归因模型。
 
-逐Step60条的历史首次结果为 **47条validated、13条invalid**。更早的分模块批次经重启和修复累计60/60，两批不能混算。当前入口两例真实联调最终validated为2/2，处置与GT一致1/2；尚未完成新的60条全量验证。
+逐Step60条的历史首次结果为 **47条validated、13条invalid**。更早的分模块批次经重启和修复累计60/60，两批不能混算。当前Responses透传联调两例材料均完整送达，最终validated为1/2；Chat转换版的2/2为另一轮记录。尚未完成新的60条全量验证。

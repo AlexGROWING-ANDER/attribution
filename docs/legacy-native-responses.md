@@ -1,4 +1,4 @@
-> 历史说明：本文件记录旧入口，配置、版本和“Responses直通”的描述不适用于当前stepwise入口。当前说明以仓库根README为准。
+> 历史说明：本文件记录旧的单结果入口。当前stepwise入口也使用原生Responses透传，但材料准备、逐Step提交和校验配置不同，当前启动说明以仓库根README为准。
 
 # gui-attribution-native
 

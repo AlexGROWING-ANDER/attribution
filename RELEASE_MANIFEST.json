@@ -1,5 +1,5 @@
 {
-  "release": "stepwise-v3-prompt-r2-review-20261110",
+  "release": "stepwise-responses-direct-20261110",
   "cli_version": "0.166.0",
   "skill_version": "0.15.2",
   "files": {
@@ -11,7 +11,7 @@
     "stepwise/engine/legacy_engine/study/__init__.py": "87c17a9d21846c3e28673f55e1bb46a10b1ebba05ce276c9733daead5ae1c874",
     "stepwise/engine/legacy_engine/study/image_scope.py": "ef72df6573af52c0ac82b2bb7084388b6fcea7e0a95820a86adc72ed48b8017b",
     "stepwise/engine/legacy_engine/study/materials.py": "53d6e69070c842c3b68451296c265afdccb53d5f955b0ab92d6cb3f3012e1f67",
-    "stepwise/engine/native_engine.py": "235e1b7e937257c7699ff03e4a8b1b36d2c101a4e65b23369aa1ab620f424a75",
+    "stepwise/engine/native_engine.py": "377bbd13a39676e6242dbab08a03403deb7c1e274c496682c93dde06bc9917cd",
     "stepwise/engine/normalization_audit.py": "1c584b47002dfef9d74d09b0daca6987f4c69d02944af99331c406a2581ec65c",
     "stepwise/engine/stepwise_support_fast.py": "a167bbe7a0a71b707c40fcd216ff35587edcc9f37851fe6182ebd89ec9bda502",
     "stepwise/engine/stepwise_support_v2.py": "d31f5dd348ceb45261be7ef26c4dd57abe23fa098cab90b22bab07756b132e40",
@@ -20,7 +20,7 @@
     "stepwise/prompts/stepwise_en.txt": "604f47551f76ee9628c969493ba482c8ec84a05cda02b7670df3f5b10257042e",
     "stepwise/protocols/submission_protocol.md": "46e954c37215c2fdf616e5d2e7b7b9d7940fef609db0f227c82a67ccf2e65f2a",
     "stepwise/run_batch.py": "7113c5c1cf36a46884eeac0feb049f10499b0b4b0406d46bf5322b6e4dd0ae90",
-    "stepwise/run_case.py": "6adfb68896ca72952fac579e07a942eecfb4cd5e09afeb371eb4362c48d78f6e",
+    "stepwise/run_case.py": "ea3bdee393f77c83306cca9f119d5139ef4ad6aaa3accff42ae07e5410a87a03",
     "stepwise/skills/v3/gui-trajectory-attribution/agents/openai.yaml": "516f3af3bca005080e32a5dfba86f2fe5579753022e67b2ad08c5b7d78eb04e2",
     "stepwise/skills/v3/gui-trajectory-attribution/references/actor-mapping.json": "3ab5a225e7ed15dc71a4d74efe9e2b974efd23c47bd26816cdcd3121ad363284",
     "stepwise/skills/v3/gui-trajectory-attribution/references/evidence-rules.md": "9cac28dde049f94d12fd23eadf7761968d565b90b90f9f0f363c2bb6209cda5c",
@@ -38,7 +38,9 @@
     "stepwise/skills/v3/gui-trajectory-attribution/references/template-registry.json": "620e3ef58d695fa60945405b8a759f6ab1d905b2ca8378e879fee8251228f07a",
     "stepwise/skills/v3/gui-trajectory-attribution/scripts/validate_result.py": "7ab6262b57a2b776297162490c2c64648e77c1fa1331c2ef0749902b82ebfe83",
     "stepwise/skills/v3/gui-trajectory-attribution/SKILL.md": "b209f562e4039dc57509eee1bd1ccafa326c1596a0e92dd0eb43b699f3433e70",
-    "stepwise/skills/v3/manifest.json": "919eebd008541c10fb298cab8778f4f00be360424a4c8cfceca4995f4b84c47d"
+    "stepwise/skills/v3/manifest.json": "919eebd008541c10fb298cab8778f4f00be360424a4c8cfceca4995f4b84c47d",
+    "stepwise/engine/responses_transport.py": "af6eaaec1cc8f9f55996f0eb4913a8162d8661f3a9a3f3be5dffc6b4c0cf43d3"
   },
-  "prompt_version": "stepwise-prompt-r2"
+  "prompt_version": "stepwise-prompt-r2",
+  "transport": "responses_passthrough"
 }
