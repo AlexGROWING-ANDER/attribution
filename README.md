@@ -1,218 +1,145 @@
-# gui-attribution-native
+# GUI轨迹归因：Codex CLI逐Step输出
 
-用 **Codex CLI 原生加载技能**，对 GUI 智能体轨迹做失败归因的执行框架。
+使用Codex CLI原生加载归因Skill，完整读取GUI任务的日志和网站图库，按Step保存局部判断，再提交全局归因，由程序组装并校验最终结果。
 
-模型不是被喂一段规则文本，而是在受限工作区里**自己打开技能文件、逐页读日志、逐张看图**，
-最后按调用方给的 schema 交一份归因 JSON。
+版本：**Skill v3／0.15.2 + r00_v3逐Step协议 + Codex CLI 0.166.0**。已验证的任务来自Mobile-Agent-v3 Hard Intents。Skill另含Agent-S2和UniPath模板，但这轮60条结果不能代表它们的实测表现。
 
----
-
-## 1. 它解决什么
-
-给一条 GUI 任务轨迹（日志 + 截图），判断「任务失败在哪一步、由谁造成、属于哪一层」，
-并保证**模型确实看完了全部证据**——不是凭摘要猜，也不是靠模型自述。
-
-三层判定沿用 Mobile-Agent 体系：
-
-| 层 | 含义 | 取值示例 |
+| 框架 | 规则与分类模板 | 执行验证范围 |
 |---|---|---|
-| L1 | 责任大类 | `framework` / `precondition` / `app` |
-| L2 | 责任模块或阻塞类型 | `manager` / `executor` / `account_permission` … |
-| L3 | 具体错误语义 | `incorrect_state_understanding` / `wrong_planning` … |
+| Mobile-Agent-v3 | 已包含 | 历史60条及当前入口两例真实联调，结果分别记录 |
+| UniPath | 已包含 | 同学已独立验证；该验证的代码版本和记录未纳入本仓验收材料 |
+| Agent-S2 | 已包含 | 当前发布入口尚待真实联调 |
 
----
+三框架共用输出协议，分别使用各自的职责映射和标签。运行器接收整理后的材料清单；接入其他框架时需核对当前attempt、日志步骤映射和网站图库范围，并非直接读取任意原始轨迹目录即可运行。
 
-## 2. 一次调用（12 步）
+当前启动Prompt为候选 `stepwise-prompt-r2`：Skill负责分析方法，启动文本提供任务与资源入口，独立提交协议定义工具及文件接口。已完成两例真实联调，最终校验2/2通过，各有一次局部纠错；完整60条尚未重跑，历史47/60属于旧Prompt。见 [Prompt说明](docs/PROMPT_CHANGES.md) 与 [两例联调](docs/SMOKE_TEST.md)。
 
-```
- 1  读 selection/READY.json → prediction_manifest.json（只有身份与证据清单，无 GT）
- 2  校验技能包：逐个文件比对 sha256，不一致拒跑
- 3  建沙箱 workspace，技能复制到 workspace/.agents/skills/gui-trajectory-attribution
- 4  装证据：日志 → logs/page_001.txt …（每页 ≤14k 字符，带 BEGIN/END_SOURCE_RANGE 标记）
-           图片 → images/*.png（内容是 q85 WebP 的字节）
- 5  写 input_index.json：告诉模型有哪些日志页、哪些图
- 6  拼提示词：一句 "Use $gui-trajectory-attribution …" + 调用方提交 schema
- 7  起本地记录器（127.0.0.1:随机端口）
- 8  启动 codex：
-      codex exec --ignore-user-config --skip-git-repo-check --approve-for-me --json \
-                 -C <workspace> -m <model> -o answer.txt
- 9  用 -c 注入开关：
-      features.skip_host_skill_discovery = true     # 只用被测的这一版技能
-      permissions…filesystem = {":root":"deny", workspace:"write"}
-      network.enabled = false
-      request_max_retries / stream_max_retries = 0
-      tool_output_token_limit = 50000
-10  模型自己干活：exec_command 读日志页、view_image 读图
-11  记录器把 view_image 送出的图片字节替换成约定的 q85 缓存字节，其余原样转发
-12  answer.txt → 解析 → 按协议 compile → 跑技能自带校验器 → result.json / status.json
+## 实际调用方式
+
+```text
+有界批跑器（默认8路，最多16路）
+  → 每条案例独立启动 Codex CLI 0.166.0
+  → 原生加载Skill，使用原生exec_command／view_image读取材料
+  → 本地协议桥：Responses ↔ Chat Completions
+  → 公司网关：deepseek-v4.1-flash
 ```
 
-框架不替模型做任何决策：技能是 codex 自己发现、自己决定读哪几个 references，工具是 codex 自带的。
+本地协议桥转换Responses与Chat Completions的工具和会话格式，恢复约定图片字节，并记录送达回执。审批请求仍由Codex发起，桥接将其明确路由到同一DeepSeek模型，这是项目的审批代理配置，不声称使用OpenAI官方审批模型。
 
----
+模型工作区只包含当前材料、Skill和提交工具。GT、评分文件和历史预测不进入工作区。送达回执能说明材料进入请求，不能证明模型已经注意并正确理解全部材料。
 
-## 3. 本地记录器做什么
+## 目录
 
-**不是协议网关。** 请求与响应都按 Responses 原样转发，唯一的改写点是图片字节：
-
-| 做 | 不做 |
-|---|---|
-| 把 `input_image.image_url` 换成约定的 q85 字节 | 不改请求结构、不改除模型名以外的字段 |
-| 记 `access_receipt`：哪张图、哪页日志进了上下文 | 不重排、不合并、不改工具定义 |
-| 卡 160 次上游调用、`retries=0`、wall 截止 | 不做任何协议翻译 |
-
-**为什么必须替换图片**：codex 会把磁盘上的图重新编码后上传（实测 188 KB 的 q85 被编码成 652 KB）。
-不替换，各组看到的就不是同一份像素，A/B 对比失去前提。
-
-**为什么必须自己记账**：`access_receipt.json` 是「模型确实看完了」的唯一硬证据，模型自述不算。
-
----
-
-## 4. 目录
-
-```
-.
-├── runner/
-│   ├── native_case_runner.py    单案例主控
-│   ├── config.example.json
-│   └── skill/
-│       ├── manifest.json        技能清单 + 逐文件 sha256
-│       └── gui-trajectory-attribution/
-│           ├── SKILL.md
-│           ├── references/      分类学、证据规则、输出约定、schema
-│           └── scripts/validate_result.py
-└── engine/
-    ├── study/                   q85 证据编码、计划与提示词
-    ├── harness/                 输出协议、提交与校验
-    └── supervisor/              中断恢复
+```text
+stepwise/
+  run_case.py                  可移植单案例入口
+  run_batch.py                 8—16路有界批跑，也支持1—7路
+  prompts/stepwise_en.txt       统一启动Prompt模板
+  protocols/submission_protocol.md  本轮工具、分步提交与完成约定
+  engine/
+    native_engine.py           原生CLI、协议桥、材料送达记录
+    candidate_bridge.py        Responses与Chat工具协议转换
+    stream_transport_fast.py   流式响应与有界网络重试
+    stepwise_support_v2.py     分步结构、全局结构、程序组装
+    stepwise_support_fast.py   实际启动Prompt和交互提速安排
+    io.ps1                     步骤提交与基础检查
+    validate_result.py         这轮实际使用的最终校验器
+    normalization_audit.py     原有规范化和组装过程的字段变化记录
+    legacy_engine/             原生路径需要的材料／输出协议依赖
+  skills/v3/
+    manifest.json
+    gui-trajectory-attribution/
+      SKILL.md
+      references/
+      agents/
+      scripts/validate_result.py
+docs/
+  examples/                    历史实际Prompt及分步／全局Schema
+  source-manifest.json          原始文件哈希和导出调整
+  PROTOCOL.md                  提交流程与原版本关系
+  RESULTS.md                   历史结果口径及限制
+tests/                         离线检查，不向归因模型加载
+RELEASE_MANIFEST.json           导出运行文件的SHA256
 ```
 
----
+原仓库的 `runner/native_case_runner.py` 继续保留供历史对照，原说明移到 `docs/legacy-native-responses.md`。新入口使用 `stepwise/`，两种方式不能混称。
 
-## 5. 依赖
+## 安装与配置
 
-- Windows（`mxc` 沙箱、`taskkill`、`CREATE_NO_WINDOW`）
-- Python 3.12+
-- Codex CLI **0.162.1**
-- Node（跑 `codex.js`）
+要求Windows、Python 3.10+、Node、Codex CLI **0.166.0**。入口检查CLI版本。
 
-```bash
-pip install -r requirements.txt
+```powershell
+npm install -g @openai/codex@0.166.0
+python -m pip install -r requirements.txt
+Copy-Item config/stepwise.env.example config/stepwise.env
 ```
 
----
+在本地 `config/stepwise.env` 填写公司HTTPS Chat接口地址和密钥，该文件已被Git忽略。可选设置 `CODEX_BINARY`（JSON参数数组）、`CODEX_RUNTIME_DEP`（Codex PowerShell运行时目录）。未指定时按常规npm安装位置发现。
 
-## 6. 跑一条
+## 输入材料
 
-```bash
-export GROUND_URL=https://<gateway>/v1          # 需原生支持 Responses
-export GROUND_API_KEY=sk-...
-export CODEX_BINARY='["C:/Program Files/nodejs/node.exe","C:/Users/x/AppData/Roaming/npm/node_modules/@openai/codex/bin/codex.js"]'
+沿用冻结的 `prediction_manifest.json`。清单只含任务身份、证据目录和图片范围，不含GT。顶层有 `cases`、`image_delivery`；每条包含 `case_id`、`identity`、`evidence_root`、`inventory`、`available_steps`、`images`、`image_count`、`image_scope`。
 
-python runner/native_case_runner.py \
-  --case case_024 --version v3 \
-  --out runs/case_024 --wall 1800
+`inventory`保存attempt内的相对路径及源文件SHA256；`images`保存实际发送图片的文件路径和SHA256；`image_scope`声明与人工网站一致的图片内容、顺序和数量。代码仓库不携带原始轨迹、图片缓存和GT。
+
+材料根目录与缓存支持绝对路径，也支持相对清单文件的路径。换电脑时按新目录调整路径，保留文件哈希及原任务、attempt身份。
+
+历史批次使用**已有q85 WebP缓存，保持原图尺寸**，属于有损编码，不是原始PNG字节或无损压缩。执行器直接读取清单登记的图片缓存。
+
+## 启动
+
+先预检：只核对代码、Skill、材料哈希、CLI和运行时，不请求模型。
+
+```powershell
+python stepwise/run_case.py --manifest data/prediction_manifest.json --case case_001 --out runs/check_case001 --preflight
 ```
 
-### 环境变量
+单案例真实运行：
 
-| 变量 | 必填 | 说明 |
-|---|---|---|
-| `GROUND_URL` / `GROUND_API_KEY` | 是 | 模型网关（原生 Responses） |
-| `MODEL_ENV_FILE` | 否 | 凭证文件，默认 `<repo>/config/model.env` |
-| `CODEX_BINARY` | 否 | 默认自动在 npm 全局目录找 codex.js |
-| `SELECTION_DIR` | 否 | 案例清单目录，默认 `<repo>/selection` |
-| `SKILL_ROOT` | 否 | 技能根目录，默认 `runner/skill` |
-| `CODEX_RUNTIME_DEP` | 否 | codex 运行时依赖目录（沙箱只读放行） |
-| `ATTRIBUTION_MODEL` | 否 | 默认 `deepseek-v4.1-flash` |
-| `MAIN_MAX_TOKENS` | 否 | 默认 24000 |
-| `ATTRIBUTION_OFFLINE=1` | 否 | 离线自检，不发真实请求 |
-
----
-
-## 7. 案例材料要准备什么
-
-`selection/` 下两个文件，**均不含 GT**：
-
-```json
-// READY.json
-{
-  "ready": true,
-  "case_count": 60,
-  "prediction_manifest": "prediction_manifest.json",
-  "prediction_manifest_sha256": "<sha256>",
-  "evidence_root": "D:/data/evidence",
-  "q85_cache_root": "D:/data/q85_image_cache"
-}
+```powershell
+python stepwise/run_case.py --manifest data/prediction_manifest.json --case case_001 --out runs/case001_a1 --env-file config/stepwise.env --wall 3600
 ```
 
-```json
-// prediction_manifest.json 的一条
-{
-  "case_id": "case_024",
-  "identity": { "app": "...", "task_id": "...", "attempt": "..." },
-  "inventory": [
-    { "source_id": "S0001", "source": "images/a.png", "kind": "image", "sha256": "..." },
-    { "source_id": "S0002", "source": "logs/step_1.txt", "kind": "log", "step": 1, "sha256": "..." }
-  ],
-  "images": [
-    { "source_id": "S0001", "delivery_path": "D:/data/q85/xxx.webp", "delivery_sha256": "..." }
-  ],
-  "evidence_root": "D:/data/evidence/case_024",
-  "available_steps": 5,
-  "image_scope": "website"
-}
+并发运行清单中全部案例，也可通过 `--cases case_001 case_002` 指定范围：
+
+```powershell
+python stepwise/run_batch.py --manifest data/prediction_manifest.json --out runs/batch01 --env-file config/stepwise.env --jobs 8 --wall 3600
 ```
 
-`inventory` 是送达判定的唯一依据；`images[].delivery_path` 指向 q85 缓存，记录器按它替换字节。
+`--jobs`允许1—16。`--stop-on-invalid`在首个未通过结果后停止新派发，已启动任务继续完成。在批次目录创建 `PAUSE` 同样停止新派发。
 
----
+移除 `PAUSE` 后，同一命令追加 `--resume` 可接着运行未派发案例。恢复要求输入清单、运行代码和Skill绑定一致，子进程启动前也核对这些哈希，避免中途换版混算。已有尝试不会被覆盖或自动重跑。失败重跑使用新批次目录，并分别保留两次记录。调度器意外退出后若留下 `batch.lock`，先核对锁中PID确认旧进程已退出，再移除锁恢复。
 
-## 8. 产物
+批跑器提供有界并发和续跑；不安装定时任务，不自动改写Skill，不启用模型最终校验反馈后的回修。
 
-| 文件 | 用途 |
-|---|---|
-| `prompt.txt` | 实际下发的提示词（含 schema） |
-| `input_index.json` | 模型可见的全部日志页与图片 |
-| `workspace/` | 沙箱（logs / images / .agents/skills） |
-| `calls/NNN/responses_public.json` | 每次上游请求（图片只留 `uri_sha256` + 字符数） |
-| `calls/NNN/route.json` | 本轮用途（main_agent / aux）与上游模型 |
-| `upstream_audit.json` | 调用账本：是否真发上游、字节数、HTTP 状态、图片替换记录 |
-| `access_receipt.json` | 证据送达回执：读了哪些页、看了哪些图 |
-| `answer.txt` / `result.json` / `status.json` | 原始输出 / 编译结果 / 状态机 |
+## 输出与检查
 
----
+每条案例保留实际 `prompt.txt`、步骤文件、`global_summary.json`、`access_receipt.json`、组装审计、`result.json`、`status.json`及调用日志。
 
-## 9. 实测记录
+1. `io.ps1`做基础字段、步序和来源编号检查，记录会话内局部纠错
+2. 程序组装步骤与全局文件，绑定身份、证据编号、过程和覆盖情况
+3. `stepwise/engine/validate_result.py`执行最终JSON结构、引用、标签和规则一致性检查
 
-一条 5 步 / 5 图 / 14 条日志的案例（`case_024`），单卡单进程：
+Skill内的校验脚本保留冻结快照，与上述实际校验器版本不同。本协议要求模型不自行执行最终校验；由调用方在完成后严格校验一次。
 
-```
-returncode     0            timed_out      false
-coverage       19/19 源，5/5 图，3/3 页
-上游调用        13 次
-耗时           241.7 秒
-state          validated（schema 与业务校验均通过）
-图片替换        15 次，全部命中 q85 字节
+单独执行实际校验器时，默认读取本包冻结规则，也可显式指定：
+
+```powershell
+python stepwise/engine/validate_result.py runs/case001_a1/result.json --references stepwise/skills/v3/gui-trajectory-attribution/references --evidence-root data/evidence/case_001 --access-receipt runs/case001_a1/access_receipt.json
 ```
 
----
+原版本在最终检查前已有确定性规范化，包括删除不存在的证据引用、清理定位文字、统一责任模块大小写、补未使用维度的null，以及在成功处置下统一恢复机会状态；输出协议还会剔除未声明字段。这些处理沿用原逻辑，并非都只改变排版。本包保留 `first_prediction.json`，新增 `normalization_audit.json` 和状态中的 `normalization_changed`，记录实际字段变化；处理后validated不能称为模型原始输出零修改通过。
 
-## 10. 设计上几个刻意的选择
+启动前，执行器将submission_protocol.md复制到单案例工作区，与索引、Schema和io.ps1一同提供。它只规定本轮接口，不另定义根因、责任模块或标签判定规则。
 
-| 选择 | 原因 |
-|---|---|
-| 技能放进 `.agents/skills/` + `skip_host_skill_discovery=true` | 只让模型看到被测版本，排除本机已装技能污染 |
-| 日志按 14k 字符切页并加标记 | 只有每一片都送达才算完整，读一次 ≠ 读全了 |
-| 图片统一替换为 q85 WebP（原始尺寸） | 与历史实验字节一致，且把上下文从几十 MB 降到几 MB |
-| `max_calls=160`、`retries=0`、wall 截止 | 调用次数与重试都要可复现，不靠重试掩盖失败 |
-| 校验器从技能目录加载但不在沙箱内执行 | 模型改不到校验逻辑 |
+`validated`表示程序检查通过，归因准确率另与人工GT比较。一次启动内也可能发生局部纠错，不能将它写成零错误通过。
 
----
+## 离线检查与历史结果
 
-## 11. 已知限制
+```powershell
+python -m unittest discover -s tests -v
+```
 
-- Windows 专属；`--approve-for-me` 与 `-c permissions.*` 依赖 codex 0.162.1
-- 沙箱内禁用网络（刻意）
-- 单案例 wall 1800s 是经验值，超时记 `runtime_failed`，不重试
-- 上游网关需原生支持 Responses（基础请求、流式、reasoning 回传、并行工具调用）
+测试不请求付费API，不操作手机，不把测试样例送给归因模型。
+
+逐Step60条的历史首次结果为 **47条validated、13条invalid**。更早的分模块批次经重启和修复累计60/60，两批不能混算。当前入口两例真实联调最终validated为2/2，处置与GT一致1/2；尚未完成新的60条全量验证。

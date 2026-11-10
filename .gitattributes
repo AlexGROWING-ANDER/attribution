@@ -1,0 +1,7 @@
+# Keep documents and portable entry scripts stable across Windows checkouts.
+* text=auto eol=lf
+
+# These files are frozen and verified byte-for-byte; never normalize line endings.
+stepwise/engine/** -text whitespace=cr-at-eol
+stepwise/skills/** -text whitespace=cr-at-eol,-blank-at-eof
+docs/examples/** -text whitespace=cr-at-eol

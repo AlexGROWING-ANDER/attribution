@@ -3,3 +3,21 @@ __pycache__/
 config/model.env
 runs/
 selection/
+.env
+.env.*
+!.env.example
+config/*.env
+!config/*.env.example
+.pytest_cache/
+.venv/
+data/
+artifacts/
+*.zip
+
+# Maintainer review notes and local verification artifacts.
+docs/GIT_REVIEW.md
+docs/SELF_REVIEW.md
+docs/COMMENT_REVIEW.md
+docs/offline-checks.json
+docs/offline-checks.txt
+docs/full60-preflight.json
