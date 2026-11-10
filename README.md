@@ -44,7 +44,8 @@ stepwise/
     io.ps1                     步骤提交与基础检查
     validate_result.py         这轮实际使用的最终校验器
     normalization_audit.py     规范化和组装过程的字段变化记录
-    legacy_engine/             原生路径需要的材料／输出协议依赖
+    harness/                   输出协议、证据索引和本地存储
+    study/                     材料读取与网站图库范围
   skills/v3/
     manifest.json
     gui-trajectory-attribution/

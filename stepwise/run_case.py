@@ -208,13 +208,12 @@ def main() -> int:
         return 0
     if os.name != "nt":
         raise ValueError("Native execution of this frozen mxc sandbox snapshot requires Windows")
-    credentials()  # Check presence only; never print credentials.
+    endpoint, key = credentials()
     os.environ["CODEX_RUNTIME_DEP"] = str(runtime)
-    os.environ.pop("D60_LENIENT_MERGE", None)
-    engine._LENIENT = False
-    engine.BINARY = command
-    engine.credentials = credentials
-    status = engine.run_native(*loaded, args.out.resolve(), args.wall, repair=False)
+    case, _, skill, skill_manifest, protocol, store = loaded
+    status = engine.run_native(
+        case, skill, skill_manifest, protocol, store, args.out.resolve(), args.wall, command=command, endpoint=endpoint, key=key,
+    )
     engine.atomic(args.out.resolve() / "input_binding.json", {
         "manifest_sha256": manifest_digest,
         "runtime_manifest_sha256": sha256(REPO / "RELEASE_MANIFEST.json"),
