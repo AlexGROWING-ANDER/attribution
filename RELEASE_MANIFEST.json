@@ -1,10 +1,10 @@
 {
-  "release": "stepwise-responses-direct-20261110",
+  "release": "stepwise-responses-revision-precheck-20261110",
   "cli_version": "0.166.0",
   "skill_version": "0.15.2",
   "files": {
     "stepwise/engine/candidate_bridge.py": "8baaaefc6444d6ae7a08ea3cfe2be5ef4b68109b976a4990dec703c1df549fb2",
-    "stepwise/engine/io.ps1": "7c1cda94bc6eaba6e1a77806e4e54d5f840f27c11a8013ba7f7c44ce2f1f951b",
+    "stepwise/engine/io.ps1": "2aa6aecdf6bf6d46cbf943df08ed6b82d4e0b7139a0d215f83fa5200f4a919e4",
     "stepwise/engine/legacy_engine/harness/__init__.py": "fcaece8f4fde9a59b389ee1b0d925778127a48d5685fd04715cde6610ccffb56",
     "stepwise/engine/legacy_engine/harness/protocol.py": "ed3c63ed774d14615db85c224e3ca87156baf1ec1acc5970e8cd15cdcdfac1a1",
     "stepwise/engine/legacy_engine/harness/storage.py": "2bd30ea7f233b573d8a2748100eb0c527611c5532362339c9d8785dcc2a9c5a4",
