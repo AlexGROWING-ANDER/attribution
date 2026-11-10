@@ -1,7 +1,0 @@
-Use $gui-trajectory-attribution natively for the current attempt. Load its required references and use its analysis workflow and attribution rules.
-
-TASK IDENTITY: {"id": "case_001", "framework": "mobile_agent_v3", "dataset": "Hard Intents", "task_id": "com.tencent.qqmusic::test_1", "instruction": "随机播放热门搜索中的一首歌，把他添加到一个名称为test的歌单", "attempt": "20260923_003437_随机播放热门搜索中的一首歌，把他添加到一个名称为test的歌", "template_id": "mobile_agent_v3", "template_sha256": "52bdac4be3c2dbf99137e54f76279fa41624f75446f0150e709b589d5acba7bd", "policy_id": "gui-attribution-policy-4", "adapter_version": "unknown"}
-
-Before analyzing the trajectory or submitting records, read submission_protocol.md, input_index.json, step_index.json, step_record.schema.json and global_summary.schema.json. Startup reads may run in parallel as separate calls with adequate output limits. The protocol specifies tools, per-step submission and completion conditions; the Skill supplies the analysis method.
-
-Work only with this attempt's materials in the prepared workspace. The caller assembles and strictly validates the final result.json.

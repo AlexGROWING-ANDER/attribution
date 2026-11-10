@@ -12,7 +12,7 @@
 
 三框架共用输出协议，分别使用各自的职责映射和标签。运行器接收整理后的材料清单；接入其他框架时需核对当前attempt、日志步骤映射和网站图库范围。
 
-当前启动Prompt为 `stepwise-prompt-r2`：Skill负责分析方法，启动文本提供任务与资源入口，独立提交协议定义工具及文件接口。见 [Prompt说明](docs/PROMPT_CHANGES.md)。
+Skill负责分析方法，启动Prompt提供任务与资源入口，提交协议定义工具及文件接口。见 [提交流程](docs/PROTOCOL.md)。
 
 ## 实际调用方式
 
@@ -43,7 +43,7 @@ stepwise/
     stepwise_support_fast.py   实际启动Prompt和交互提速安排
     io.ps1                     步骤提交与基础检查
     validate_result.py         这轮实际使用的最终校验器
-    normalization_audit.py     原有规范化和组装过程的字段变化记录
+    normalization_audit.py     规范化和组装过程的字段变化记录
     legacy_engine/             原生路径需要的材料／输出协议依赖
   skills/v3/
     manifest.json
@@ -53,14 +53,14 @@ stepwise/
       agents/
       scripts/validate_result.py
 docs/
-  examples/                    历史实际Prompt及分步／全局Schema
+  examples/                    当前Prompt示例及分步／全局Schema
   source-manifest.json          原始文件哈希和导出调整
-  PROTOCOL.md                  提交流程与原版本关系
+  PROTOCOL.md                  提交流程与校验约定
 tests/                         离线检查，不向归因模型加载
 RELEASE_MANIFEST.json           导出运行文件的SHA256
 ```
 
-原仓库的 `runner/native_case_runner.py` 继续保留供历史对照，原说明移到 `docs/legacy-native-responses.md`。新入口使用 `stepwise/`。历史Chat转换模块保留用于旧版对照测试，当前原生入口不加载它们，也不在失败时退回Chat接口。
+运行入口为 `stepwise/run_case.py` 和 `stepwise/run_batch.py`。
 
 ## 安装与配置
 
@@ -72,17 +72,17 @@ python -m pip install -r requirements.txt
 Copy-Item config/stepwise.env.example config/stepwise.env
 ```
 
-在本地 `config/stepwise.env` 填写公司HTTPS Responses接口地址和密钥，该文件已被Git忽略。可填网关基础地址 `https://<gateway>/v1` 或完整 `/v1/responses`；旧配置若以 `/chat/completions` 结尾，入口会改用同一网关的 `/responses`，不会发送Chat请求。网关必须支持当前模型的原生Responses流和工具调用。可选设置 `CODEX_BINARY`（JSON参数数组）、`CODEX_RUNTIME_DEP`（Codex PowerShell运行时目录）。未指定时按常规npm安装位置发现。
+在本地 `config/stepwise.env` 填写公司HTTPS Responses接口地址和密钥，该文件已被Git忽略。可填网关基础地址 `https://<gateway>/v1` 或完整 `/v1/responses`。网关必须支持当前模型的原生Responses流和工具调用。可选设置 `CODEX_BINARY`（JSON参数数组）、`CODEX_RUNTIME_DEP`（Codex PowerShell运行时目录）。未指定时按常规npm安装位置发现。
 
 ## 输入材料
 
-沿用冻结的 `prediction_manifest.json`。清单只含任务身份、证据目录和图片范围，不含GT。顶层有 `cases`、`image_delivery`；每条包含 `case_id`、`identity`、`evidence_root`、`inventory`、`available_steps`、`images`、`image_count`、`image_scope`。
+输入为 `prediction_manifest.json`。清单只含任务身份、证据目录和图片范围，不含GT。顶层有 `cases`、`image_delivery`；每条包含 `case_id`、`identity`、`evidence_root`、`inventory`、`available_steps`、`images`、`image_count`、`image_scope`。
 
 `inventory`保存attempt内的相对路径及源文件SHA256；`images`保存实际发送图片的文件路径和SHA256；`image_scope`声明与人工网站一致的图片内容、顺序和数量。代码仓库不携带原始轨迹、图片缓存和GT。
 
 材料根目录与缓存支持绝对路径，也支持相对清单文件的路径。换电脑时按新目录调整路径，保留文件哈希及原任务、attempt身份。
 
-历史批次使用**已有q85 WebP缓存，保持原图尺寸**，属于有损编码，不是原始PNG字节或无损压缩。执行器直接读取清单登记的图片缓存。
+图片使用**清单登记的q85 WebP缓存，保持原图尺寸**，属于有损编码，不是原始PNG字节或无损压缩。执行器直接读取清单登记的图片缓存。
 
 ## 启动
 
@@ -114,7 +114,7 @@ python stepwise/run_batch.py --manifest data/prediction_manifest.json --out runs
 
 每条案例保留实际 `prompt.txt`、步骤文件、`global_summary.json`、`access_receipt.json`、组装审计、`result.json`、`status.json`及调用日志。
 
-1. `io.ps1`做基础字段、步序和来源编号检查，记录会话内局部纠错
+1. `io.ps1`检查基础字段、步序、来源编号及补充证据一致性，记录会话内局部纠错
 2. 程序组装步骤与全局文件，绑定身份、证据编号、过程和覆盖情况
 3. `stepwise/engine/validate_result.py`执行最终JSON结构、引用、标签和规则一致性检查
 
@@ -126,7 +126,7 @@ Skill内的校验脚本保留冻结快照，与上述实际校验器版本不同
 python stepwise/engine/validate_result.py runs/case001_a1/result.json --references stepwise/skills/v3/gui-trajectory-attribution/references --evidence-root data/evidence/case_001 --access-receipt runs/case001_a1/access_receipt.json
 ```
 
-原版本在最终检查前已有确定性规范化，包括删除不存在的证据引用、清理定位文字、统一责任模块大小写、补未使用维度的null，以及在成功处置下统一恢复机会状态；输出协议还会剔除未声明字段。这些处理沿用原逻辑，并非都只改变排版。本包保留 `first_prediction.json`，新增 `normalization_audit.json` 和状态中的 `normalization_changed`，记录实际字段变化；处理后validated不能称为模型原始输出零修改通过。
+最终检查前的确定性规范化，包括删除不存在的证据引用、清理定位文字、统一责任模块大小写、补未使用维度的null，以及在成功处置下统一恢复机会状态；输出协议还会剔除未声明字段。这些处理可能改变字段内容。`first_prediction.json`保留原始预测，`normalization_audit.json`和状态中的`normalization_changed`记录实际字段变化。
 
 启动前，执行器将submission_protocol.md复制到单案例工作区，与索引、Schema和io.ps1一同提供。它只规定本轮接口，不另定义根因、责任模块或标签判定规则。
 
