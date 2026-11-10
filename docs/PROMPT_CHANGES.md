@@ -37,5 +37,3 @@ Skill的17个冻结文件、任务口径、分类模板、单步Schema、全局S
 - r1留档：docs/examples/prompt_case001_r1.txt
 - 当前候选示例：docs/examples/prompt_case001_optimized.txt
 - 中文审核版：docs/examples/prompt_case001_optimized_中文.md
-
-历史47/60属于旧Prompt。r2的Chat转换版两例最终校验2/2，各有一次局部纠错，处置与GT一致1/2。切换原生Responses透传后，沿用相同Prompt、Skill和提交协议的两例结果为1条validated、1条追加证据冲突invalid。尚未执行新的60条全量验证，不据此宣布模型能力或首过率提升。见SMOKE_TEST.md。
