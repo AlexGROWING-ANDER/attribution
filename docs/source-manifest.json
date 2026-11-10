@@ -97,12 +97,6 @@
     }
   ],
   "scope": "Native stepwise path only; dormant legacy single-shot routes are not exposed by the new entry point",
-  "historical_first_startup": {
-    "validated": 47,
-    "invalid": 13,
-    "total": 60
-  },
-  "not_same_batch_as": "ONCE60 51+9 cumulative60",
   "review_changes": [
     "Honor PAUSE before first dispatch and before worker launch",
     "Load existing failures before resume dispatch",
@@ -132,12 +126,7 @@
     "combined_characters": 4078,
     "skill_changed": false,
     "schema_changed": false,
-    "assembly_logic_changed": false,
-    "model_run_completed": true,
-    "model_smoke_cases": 2,
-    "model_smoke_validated": 2,
-    "model_smoke_decision_matches": 1,
-    "full_selected60_run_completed": false
+    "assembly_logic_changed": false
   },
   "prompt_revision_history": [
     {
@@ -149,25 +138,14 @@
       "after_characters": 5130,
       "schema_changed": false,
       "skill_changed": false,
-      "assembly_logic_changed": false,
-      "model_run_completed": false
+      "assembly_logic_changed": false
     }
   ],
   "transport_revision": {
     "transport": "responses_passthrough",
     "cli_version": "0.166.0",
     "scope": "Replace local Responses/Chat conversion with native Responses forwarding; keep Skill, prompt, submission contracts and validator rules unchanged",
-    "gateway_probe": "HTTP 200, response.completed, deepseek-v4-1-flash-261017",
     "no_chat_fallback": true,
-    "response_bytes_rebuilt": false,
-    "full_case_smoke": {
-      "cases": 2,
-      "materials_complete": 2,
-      "validated": 1,
-      "invalid": 1,
-      "invalid_reason": "additive revision modified original evidence prefix",
-      "chat_fallback_used": false,
-      "model": "deepseek-v4-1-flash-261017"
-    }
+    "response_bytes_rebuilt": false
   }
 }

@@ -185,22 +185,7 @@ python runner/native_case_runner.py \
 
 ---
 
-## 9. 实测记录
-
-一条 5 步 / 5 图 / 14 条日志的案例（`case_024`），单卡单进程：
-
-```
-returncode     0            timed_out      false
-coverage       19/19 源，5/5 图，3/3 页
-上游调用        13 次
-耗时           241.7 秒
-state          validated（schema 与业务校验均通过）
-图片替换        15 次，全部命中 q85 字节
-```
-
----
-
-## 10. 设计上几个刻意的选择
+## 9. 设计选择
 
 | 选择 | 原因 |
 |---|---|
@@ -212,7 +197,7 @@ state          validated（schema 与业务校验均通过）
 
 ---
 
-## 11. 已知限制
+## 10. 已知限制
 
 - Windows 专属；`--approve-for-me` 与 `-c permissions.*` 依赖 codex 0.162.1
 - 沙箱内禁用网络（刻意）

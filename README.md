@@ -2,17 +2,17 @@
 
 使用Codex CLI原生加载归因Skill，完整读取GUI任务的日志和网站图库，按Step保存局部判断，再提交全局归因，由程序组装并校验最终结果。
 
-版本：**Codex CLI 0.166.0**。已验证的任务来自Mobile-Agent-v3 Hard Intents。Skill另含Agent-S2和UniPath模板，但这轮60条结果不能代表它们的实测表现。
+版本：**Codex CLI 0.166.0**。
 
-| 框架 | 规则与分类模板 | 执行验证范围 |
-|---|---|---|
-| Mobile-Agent-v3 | 已包含 | 历史60条及当前入口两例真实联调，结果分别记录 |
-| UniPath | 已包含 | 同学已独立验证；该验证的代码版本和记录未纳入本仓验收材料 |
-| Agent-S2 | 已包含 | 当前发布入口尚待真实联调 |
+| 框架 | 归因模板 |
+|---|---|
+| Mobile-Agent-v3 | L1／L2／L3分层标签与模块职责 |
+| Agent-S2 | L1／L2／L3分层标签与框架职责映射 |
+| UniPath | Module／Function／Mechanism／Object |
 
-三框架共用输出协议，分别使用各自的职责映射和标签。运行器接收整理后的材料清单；接入其他框架时需核对当前attempt、日志步骤映射和网站图库范围，并非直接读取任意原始轨迹目录即可运行。
+三框架共用输出协议，分别使用各自的职责映射和标签。运行器接收整理后的材料清单；接入其他框架时需核对当前attempt、日志步骤映射和网站图库范围。
 
-当前启动Prompt为 `stepwise-prompt-r2`：Skill负责分析方法，启动文本提供任务与资源入口，独立提交协议定义工具及文件接口。当前Responses透传已完成两例完整图文调用：一例validated，一例因追加证据修改了原记录而在组装时invalid。此前Chat转换版两例最终校验2/2通过，各有一次局部纠错，两轮分别记录；完整60条尚未重跑。见 [Prompt说明](docs/PROMPT_CHANGES.md) 与 [联调记录](docs/SMOKE_TEST.md)。
+当前启动Prompt为 `stepwise-prompt-r2`：Skill负责分析方法，启动文本提供任务与资源入口，独立提交协议定义工具及文件接口。见 [Prompt说明](docs/PROMPT_CHANGES.md)。
 
 ## 实际调用方式
 
@@ -56,7 +56,6 @@ docs/
   examples/                    历史实际Prompt及分步／全局Schema
   source-manifest.json          原始文件哈希和导出调整
   PROTOCOL.md                  提交流程与原版本关系
-  RESULTS.md                   历史结果口径及限制
 tests/                         离线检查，不向归因模型加载
 RELEASE_MANIFEST.json           导出运行文件的SHA256
 ```
@@ -133,12 +132,10 @@ python stepwise/engine/validate_result.py runs/case001_a1/result.json --referenc
 
 `validated`表示程序检查通过，归因准确率另与人工GT比较。一次启动内也可能发生局部纠错，不能将它写成零错误通过。
 
-## 离线检查与历史结果
+## 离线检查
 
 ```powershell
 python -m unittest discover -s tests -v
 ```
 
 测试不请求付费API，不操作手机，不把测试样例送给归因模型。
-
-逐Step60条的历史首次结果为 **47条validated、13条invalid**。更早的分模块批次经重启和修复累计60/60，两批不能混算。当前Responses透传联调两例材料均完整送达，最终validated为1/2；Chat转换版的2/2为另一轮记录。尚未完成新的60条全量验证。
