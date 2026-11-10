@@ -2,7 +2,7 @@
 
 使用Codex CLI原生加载归因Skill，完整读取GUI任务的日志和网站图库，按Step保存局部判断，再提交全局归因，由程序组装并校验最终结果。
 
-版本：**Skill v3／0.15.2 + r00_v3逐Step协议 + Codex CLI 0.166.0**。已验证的任务来自Mobile-Agent-v3 Hard Intents。Skill另含Agent-S2和UniPath模板，但这轮60条结果不能代表它们的实测表现。
+版本：**Codex CLI 0.166.0**。已验证的任务来自Mobile-Agent-v3 Hard Intents。Skill另含Agent-S2和UniPath模板，但这轮60条结果不能代表它们的实测表现。
 
 | 框架 | 规则与分类模板 | 执行验证范围 |
 |---|---|---|
