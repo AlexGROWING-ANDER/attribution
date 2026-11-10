@@ -148,11 +148,12 @@ def cli_command() -> list[str]:
 
 
 def credentials() -> tuple[str, str]:
+    from responses_transport import responses_endpoint
     base = os.environ.get("GROUND_URL", "").rstrip("/")
     key = os.environ.get("GROUND_API_KEY", "")
     if not base.startswith("https://") or not key:
-        raise ValueError("Set GROUND_URL (HTTPS Chat endpoint) and GROUND_API_KEY")
-    return (base if base.endswith("/chat/completions") else base + "/chat/completions"), key
+        raise ValueError("Set GROUND_URL (HTTPS Responses endpoint) and GROUND_API_KEY")
+    return responses_endpoint(base), key
 
 
 def load_environment(path: Path | None) -> None:

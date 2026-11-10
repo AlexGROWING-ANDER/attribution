@@ -17,11 +17,8 @@ from jsonschema import Draft202012Validator
 from study.materials import EvidenceStore
 from harness.protocol import OutputProtocol,SourceCatalog,parse_wire_json
 # Legacy single-shot execution is intentionally unused in this experiment.
-from candidate_bridge import convert,validate_reply,response_events,ROUTES
-from stream_transport_fast import stream_chat,stream_chat_retry
+from responses_transport import forward_responses,route_request,responses_endpoint
 MODEL='deepseek-v4.1-flash'
-ROUTES[MODEL].update(max_tokens=24000,read_timeout_seconds=600)
-ROUTES['codex-auto-review'].update(max_tokens=3072,read_timeout_seconds=90)
 BINARY=[r'E:\node\node.exe',r'C:\Users\ASUS\AppData\Roaming\npm\node_modules\@openai\codex\bin\codex.js']
 
 def read(p):return json.loads(Path(p).read_text(encoding='utf-8-sig'))
@@ -80,10 +77,10 @@ def load_inputs(cid,version):
  return case,manifest,skill,sm,protocol,store
 
 def credentials():
- if os.environ.get('NATIVE_RECOVERY_OFFLINE')=='1':return 'https://offline.invalid/chat/completions','OFFLINE_SYNTHETIC_NOT_A_CREDENTIAL'
+ if os.environ.get('NATIVE_RECOVERY_OFFLINE')=='1':return 'https://offline.invalid/v1/responses','OFFLINE_SYNTHETIC_NOT_A_CREDENTIAL'
  c=dotenv_values(r'D:\Codex\2026-09-19\new-chat\agent_s\config\.env');base=(c.get('GROUND_URL') or '').rstrip('/');key=c.get('GROUND_API_KEY');del c
  if not key or not base.startswith('https://'):raise ValueError('Company credential unavailable')
- return base if base.endswith('/chat/completions') else base+'/chat/completions',key
+ return responses_endpoint(base),key
 
 def page_complete(text,normalized):
  """判断整页是否进了上下文；容忍换行差异与旧版 GBK 误解码。"""
@@ -340,9 +337,10 @@ def run_native(case,manifest,skill,sm,protocol,store,out,wall=850,repair=False):
  class Handler(BaseHTTPRequestHandler):
   def log_message(self,*a):pass
   def do_POST(self):
-   item=None
+   item=None;headers_sent=False
    try:
     if self.headers.get('Authorization')!='Bearer '+token:self.send_error(403);return
+    if self.path!='/v1/responses':self.send_error(404);return
     with lock:
      n=len(aud)+1
      if n>160:raise RuntimeError('Bounded160 upstream-call limit')
@@ -350,7 +348,7 @@ def run_native(case,manifest,skill,sm,protocol,store,out,wall=850,repair=False):
     d=out/'calls'/('%03d'%n);d.mkdir(parents=True)
     body=json.loads(self.rfile.read(int(self.headers['Content-Length'])))
     restorations,newimgs,newpages=restore_and_audit(body)
-    chat,route=convert(body);item.update(purpose=route['purpose'],incoming_model=route['incoming_model'],upstream_model=route['upstream_model'],image_restorations=restorations)
+    body,route=route_request(body,MODEL);item.update(**route,image_restorations=restorations)
     # Keep hashes and a bounded public request, not duplicated base64 blobs per round.
     pub=public(body)
     def omit_images(v):
@@ -358,32 +356,18 @@ def run_native(case,manifest,skill,sm,protocol,store,out,wall=850,repair=False):
      if isinstance(v,dict):return {k:({'uri_sha256':hashlib.sha256(x.encode()).hexdigest(),'characters':len(x)} if k=='image_url' and isinstance(x,str) and x.startswith('data:') else omit_images(x)) for k,x in v.items()}
      return v
     atomic(d/'responses_public.json',omit_images(pub));atomic(d/'route.json',route)
-    data=json.dumps(chat,ensure_ascii=False).encode();item['request_bytes']=len(data)
-    timeout=min(route['read_timeout_seconds'],deadline-time.monotonic())
-    if timeout<2:raise TimeoutError('Case wall deadline')
     if os.environ.get('NATIVE_RECOVERY_OFFLINE')=='1':raise RuntimeError('OFFLINE_PREFLIGHT_NO_UPSTREAM_CALL')
     item['sent_upstream']=True;atomic(out/'bridge_audit.json',aud)
-    req=urllib.request.Request(endpoint,data=data,headers={'Authorization':'Bearer '+key,'Content-Type':'application/json'})
+    def opened(status,content_type):
+     nonlocal headers_sent
+     self.send_response(status);self.send_header('Content-Type',content_type);self.send_header('Connection','close');self.end_headers();headers_sent=True
+    def chunk(data):
+     self.wfile.write(data);self.wfile.flush()
     try:
-     payload=stream_chat_retry(endpoint,key,chat,item,min(deadline,time.monotonic()+route['read_timeout_seconds']),lambda:atomic(out/'bridge_audit.json',aud))
-    except urllib.error.HTTPError as e:item.update(http_status=e.code,error_body=clean(e.read().decode(errors='replace'))[:1500]);raise
-    item.update(returned_model=payload.get('model'),usage=payload.get('usage'),finish_reason=(payload.get('choices') or [{}])[0].get('finish_reason'))
-    msg=validate_reply(payload,route)
-    # A filesystem permission request is still handled by native approval; do not invent allow.
-    # Reject an explicit tool image path outside the declared workspace before CLI executes it.
-    for tc in msg.get('tool_calls') or []:
-     fn=tc['function'];nm=fn['name'].split('__')[-1]
-     if nm=='view_image':
-      a=json.loads(fn['arguments']);p=Path(a['path']);p=p if p.is_absolute() else w/p
-      try:rp=p.resolve()
-      except Exception:rp=p
-      _ok=str(rp).casefold() in image_paths
-      if not _ok:
-       # 接受解析后位于workspace/images内的现有文件。
-       try:_ok=rp.is_file() and (w/'images').resolve() in rp.parents
-       except Exception:_ok=False
-      if not _ok:raise ValueError('Out-of-scope image path rejected')
-    atomic(d/'upstream_public.json',public(msg))
+     forward_responses(endpoint,key,body,item,deadline,opened,chunk)
+    except urllib.error.HTTPError as e:
+     error_body=clean(e.read(16384).decode(errors='replace'));item.update(http_status=e.code,error_body=error_body[:1500])
+     self.send_response(e.code);self.send_header('Content-Type','application/json');self.send_header('Connection','close');self.end_headers();headers_sent=True;self.wfile.write(error_body.encode());self.wfile.flush();raise
     if route['purpose']=='main_agent':
      for page,cid in newpages:
       if page['path'] not in page_hits:
@@ -399,15 +383,13 @@ def run_native(case,manifest,skill,sm,protocol,store,out,wall=850,repair=False):
       rs=sorted(set(ranges.get(e['source_id'],[])))
       if rs and rs[0][0]==0 and all(a[1]==b[0] for a,b in zip(rs,rs[1:])) and rs[-1][1]==rs[-1][2]:events.append({'source':e['source'],'sha256':e['sha256'],'operation':'read_text','success':True,'content_complete':True,'tool_call_id':'complete-pages-call-'+str(n),'delivered_ranges':rs,'truncated':False})
      atomic(out/'access_receipt.json',receipt())
-    ev=response_events(msg,payload['model'],payload.get('usage'),route['tool_aliases'])
-    self.send_response(200);self.send_header('Content-Type','text/event-stream');self.send_header('Connection','close');self.end_headers()
-    for e in ev:self.wfile.write(('event: '+e['type']+'\ndata: '+json.dumps(e)+'\n\n').encode())
-    self.wfile.flush();item['delivered_to_cli']=True
    except Exception as e:
     if item is not None:item['error']=clean(type(e).__name__+': '+str(e))[:1400]
-    try:self.send_response(502);self.end_headers();self.wfile.write(json.dumps({'error':{'message':clean(str(e))[:300]}}).encode())
+    try:
+     if not headers_sent:self.send_response(502);self.send_header('Connection','close');self.end_headers();self.wfile.write(json.dumps({'error':{'message':clean(str(e))[:300]}}).encode())
     except OSError:pass
    finally:
+    self.close_connection=True
     if item is not None:item['finished_at']=time.time()
     atomic(out/'bridge_audit.json',aud)
  server=ThreadingHTTPServer(('127.0.0.1',0),Handler);server.daemon_threads=True;threading.Thread(target=server.serve_forever,daemon=True).start()
