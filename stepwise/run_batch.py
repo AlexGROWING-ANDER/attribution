@@ -12,7 +12,7 @@ import threading
 import time
 
 ROOT = Path(__file__).resolve().parent
-sys.path.insert(0, str(ROOT / "engine" / "legacy_engine"))
+sys.path.insert(0, str(ROOT / "engine"))
 from harness.storage import atomic_json
 from run_case import validate_case_id, verify_release, sha256
 

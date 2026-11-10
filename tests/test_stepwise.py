@@ -25,7 +25,6 @@ from jsonschema import Draft202012Validator
 from harness.protocol import digest
 import stepwise_support_v2 as protocol
 import stepwise_support_fast as prompt_builder
-import candidate_bridge
 from normalization_audit import changes
 
 
@@ -257,32 +256,6 @@ class PromptTests(unittest.TestCase):
         self.assertNotIn("PowerShell", prompt)
 
 
-class BridgeTests(unittest.TestCase):
-    def test_main_route_is_deepseek(self):
-        request, route = candidate_bridge.convert({
-            "model": "deepseek-v4.1-flash", "input": "Synthetic test",
-        })
-        self.assertEqual(request["model"], "deepseek-v4.1-flash")
-        self.assertEqual(route["purpose"], "main_agent")
-
-    def test_approval_requires_original_schema(self):
-        with self.assertRaisesRegex(ValueError, "schema"):
-            candidate_bridge.convert({"model": "codex-auto-review", "input": "Synthetic approval"})
-
-    def test_alias_round_trip_preserves_tool_identity(self):
-        _, route = candidate_bridge.convert({
-            "model": "deepseek-v4.1-flash", "input": "Synthetic test",
-            "tools": [{"type": "namespace", "name": "functions", "tools": [
-                {"type": "function", "name": "view_image", "parameters": {"type": "object"}}
-            ]}],
-        })
-        events = candidate_bridge.response_events({"tool_calls": [{
-            "id": "call_1", "type": "function", "function": {
-                "name": "functions__view_image", "arguments": '{"path":"images/frame.png"}'
-            }}]}, "deepseek-v4.1-flash", None, route["tool_aliases"])
-        done = [event for event in events if event["type"] == "response.output_item.done"][0]["item"]
-        self.assertEqual((done["namespace"], done["name"]), ("functions", "view_image"))
-
 
 class BatchTests(unittest.TestCase):
     def test_resume_rejects_different_runtime_binding(self):
@@ -465,7 +438,7 @@ class NormalizationAuditTests(unittest.TestCase):
                   "outcome": {"decision": "success"}, "recovery_opportunity": {"exists": "yes", "attempted": "yes", "outcome": "succeeded"}}
         class FakeProtocol:
             def compile(self, prediction): return copy.deepcopy(prediction)
-            def project_legacy(self, result): return copy.deepcopy(result)
+            def project(self, result): return copy.deepcopy(result)
             def wire_schema(self): return {"type": "object"}
         class FakeValidator:
             def validate_result(self, *args, **kwargs): return []

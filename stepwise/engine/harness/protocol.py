@@ -6,7 +6,6 @@ import hashlib
 import json
 import re
 from pathlib import Path, PurePosixPath, PureWindowsPath
-from typing import Callable
 
 from jsonschema import Draft202012Validator
 
@@ -80,14 +79,6 @@ def canonical_path(value: str) -> str:
 
 def digest(value) -> str:
     return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
-
-
-def protected_judgments(data: dict) -> dict:
-    """These values are never editable by protocol repair, even if GT disagrees."""
-    return {"attribution": data["attribution"], "error_candidates": data["error_candidates"],
-            "goals": data["goals"], "preconditions": data["preconditions"], "evidence": data["evidence"],
-            "completion": data["outcome"]["completion"],
-            "contamination_impact": data["contamination"]["impact"], "contamination_provenance": data["contamination"]["provenance"]}
 
 
 class SourceCatalog:
@@ -174,7 +165,7 @@ class OutputProtocol:
         evidence["required"].append("source_id")
         return schema
 
-    def project_legacy(self, raw: dict) -> dict:
+    def project(self, raw: dict) -> dict:
         if raw["case"] != self.identity or raw["skill_version"] != self.skill_version:
             raise ProtocolError("Result identity/version differs from bound attempt; cannot transplant it")
         data = copy.deepcopy(raw)
@@ -186,7 +177,6 @@ class OutputProtocol:
         for evidence in data["evidence"]:
             evidence["source_id"] = self.catalog.encode(evidence.pop("source"))
         return data
-
 
 
     def compile(self, projection: dict) -> dict:
@@ -216,154 +206,6 @@ class OutputProtocol:
                 raise ProtocolError('Evidence step/source alignment mismatch: '+source_id)
             evidence["source"] = self.catalog.decode(source_id)
         return data
-
-    def repair_schema(self, data: dict) -> dict:
-        coverage = data["coverage"]
-        can_complete = (set(coverage["log_steps_read"]) == set(self.steps)
-                        and set(coverage["screenshots_viewed"]) == set(self.catalog.image_paths)
-                        and self.image_index_complete and not coverage["missing"] and not coverage["truncations"])
-        decisions = list(self.schema['properties']['outcome']['properties']['decision']['enum'])
-        if data['outcome']['completion']=='success':
-            decisions = [x for x in decisions if x not in ('fail','precondition_blocked')]
-        if not can_complete:
-            decisions = [x for x in decisions if x!='success']
-        return {"type": "object", "additionalProperties": False, "properties": {
-            "decision": {"type": "string", "enum": decisions},
-            "contamination_status": {"type": "string", "enum": ["present", "suspected", "not_observed", "unknown"]},
-            "reset_requirements": {"type": "array", "uniqueItems": True, "items":
-                                   {"type": "string", "enum": data["contamination"]["reset_requirements"]}
-                                   if data["contamination"]["reset_requirements"] else False},
-            "scan_complete": {"type": "boolean", **({"const": False} if not can_complete else {})},
-            "reason": {"type": "string", "minLength": 1}},
-            "required": ["decision", "contamination_status", "reset_requirements", "scan_complete", "reason"]}
-
-    def apply_repair(self, data: dict, patch: dict, validator: Callable[[dict], list[str]]) -> tuple[dict, dict]:
-        errors = list(Draft202012Validator(self.repair_schema(data)).iter_errors(patch))
-        if errors:
-            raise ProtocolError("Repair schema: " + "; ".join(e.message for e in errors))
-        before = digest(protected_judgments(data))
-        revised = copy.deepcopy(data)
-        basis = (f"输出协议处理：completion={data['outcome']['completion']}；decision={patch['decision']}；"
-                 f"scan_complete={str(patch['scan_complete']).lower()}。"
-                 "原有完整性缺口、证据和因果判断保留。原分析说明与模型修复说明另存供审阅；此处为程序生成的处置说明。")
-        revised["outcome"].update(decision=patch["decision"], basis=basis)
-        revised["contamination"].update(status=patch["contamination_status"], reset_requirements=patch["reset_requirements"])
-        revised["coverage"]["scan_complete"] = patch["scan_complete"]
-        if digest(protected_judgments(revised)) != before:
-            raise ProtocolError("Repair altered protected causal judgments")
-        remaining = validator(revised)
-        if remaining:
-            raise ProtocolError("Quarantined inconsistent output: " + "; ".join(remaining))
-        return revised, {"protected_judgments_sha256": before, "causal_judgments_unchanged": True,
-                         "original_basis": data['outcome']['basis'], "basis_generated_by_caller": True,
-                         "patch": patch, "changed_fields": ["outcome.decision/basis", "contamination.status/reset_requirements",
-                                                               "coverage.scan_complete"],
-                         "gt_used": False, "scope": "Common output-contract consistency only; factual correctness not established"}
-
-
-def repair_instruction() -> str:
-    return (
-        "Resolve output-contract inconsistencies only. Return the supplied small JSON schema, no prose/fences. "
-        "No GT is available. Do not reassess, rewrite or optimize Initial, Recovery, candidates, steps, goals, completion, "
-        "or evidence observations. Fields omitted from this patch cannot change. "
-        "The original uncertainty details are frozen. The caller generates procedural basis text, so do not supply basis or uncertainty text. "
-        "Success disposition requires complete review. Completion can stay success while disposition is pending. "
-        "Historical state observed is not confirmed contamination unless it violates the required baseline and affects this task. "
-        "If the retained impact states no effect, do not confirm contamination just because history exists. "
-        "Retain real material gaps, do not invent reads, delete uncertainty, add evidence or invent reset needs to pass validation. "
-        "If you cannot resolve these fields with the existing facts, explain that in reason and retain pending where legal."
-    )
-
-
-def procedural_view(data: dict, errors: list[str]) -> dict:
-    """Only the fields needed for a procedural patch; never sends causal labels or GT."""
-    return copy.deepcopy({"validation_errors": errors, "outcome": {
-        key: data["outcome"][key] for key in ("completion", "decision", "basis")},
-        "coverage": data["coverage"], "contamination": data["contamination"]})
-
-
-def bind_output_schema(request: dict, schema: dict, mode: str = "prompt", name: str = "attribution_output") -> dict:
-    """Portable JSON defaults to local enforcement; server grammar is opt-in.
-
-    Acceptance of a small schema does not establish support for a full nullable
-    attribution schema. Never silently retry a rejected POST in a different mode.
-    """
-    payload = copy.deepcopy(request)
-    if mode == "server":
-        payload["response_format"] = {"type": "json_schema", "json_schema": {
-            "name": name, "strict": True, "schema": copy.deepcopy(schema)}}
-    elif mode == "prompt":
-        payload.pop("response_format", None)
-        payload["messages"] = [*payload["messages"], {"role": "user", "content": (
-            "Public output contract, identical across experimental groups. Return one complete JSON object, no Markdown/code fences. "
-            "The following wire schema is enforced strictly by the caller; provider response_format is omitted for compatibility. "
-            "Do not add fields outside the schema. This concerns serialization only, not causal conclusions.\n" +
-            json.dumps(schema, ensure_ascii=False))}]
-    else:
-        raise ProtocolError("Unknown output-schema mode")
-    return payload
-
-
-def normalize_unknown_phase(projection: dict, schema: dict) -> tuple[dict, list[dict]]:
-    """Unknown wire annotation falls back to unknown; never infer before/after action.
-
-    Original phase strings are retained in the caller audit. This does not repair
-    labels, steps, source IDs, evidence facts or other invalid fields.
-    """
-    data = copy.deepcopy(projection)
-    allowed = schema['properties']['evidence']['items']['properties']['phase']['enum']
-    if 'unknown' not in allowed:
-        raise ProtocolError('Schema has no conservative unknown phase')
-    audit = []
-    for index, item in enumerate(data.get('evidence', [])):
-        if isinstance(item, dict) and isinstance(item.get('phase'), str) and item['phase'] not in allowed:
-            audit.append({'path':f'evidence[{index}].phase','evidence_id':item.get('id'),
-                          'source_id':item.get('source_id'),'original':item['phase'],'normalized':'unknown',
-                          'reason':'Invalid phase enum; no temporal alignment inferred', 'observation_changed':False})
-            item['phase'] = 'unknown'
-    return data, audit
-
-
-def procedural_errors_only(errors: list[str]) -> bool:
-    """Do not spend a formatting call on unsupported goals, labels or evidence."""
-    allowed = ('success decision requires complete review',
-               'affected baseline needs rerun, pending, precondition_blocked',
-               'scan_complete claimed with missing or unreadable materials',
-               'completion/decision conflict')
-    return bool(errors) and all(any(message.startswith(prefix) for prefix in allowed) for message in errors)
-
-
-def deduplicate_read_claims(projection: dict) -> tuple[dict, list[dict]]:
-    """Remove repeated claims only. The set of claimed reads can never increase."""
-    data = copy.deepcopy(projection)
-    audit = []
-    for field, kind in (('screenshots_viewed', str), ('log_steps_read', int)):
-        values = data.get('coverage', {}).get(field)
-        if not isinstance(values, list) or not all(type(v) is kind for v in values):
-            continue
-        unique = list(dict.fromkeys(values))
-        if len(unique) != len(values):
-            audit.append({'field':'coverage.'+field,'original_count':len(values),'unique_count':len(unique),
-                          'new_reads_added':False,'reason':'Repeated identical read claims removed; claimed read set unchanged'})
-            data['coverage'][field] = unique
-    return data, audit
-
-
-def drop_empty_evidence_annotations(projection: dict, schema: dict) -> tuple[dict, list[dict]]:
-    """Only empty-string unknown evidence annotations; never drop facts or repair names."""
-    data = copy.deepcopy(projection)
-    allowed = schema['properties']['evidence']['items']['properties']
-    audit = []
-    for index, item in enumerate(data.get('evidence', [])):
-        if not isinstance(item, dict):
-            continue
-        for key in list(item):
-            if key not in allowed and item[key] == '':
-                audit.append({'path':f'evidence[{index}].{key}', 'original':'',
-                              'action':'removed_unknown_empty_annotation',
-                              'facts_or_required_fields_changed':False})
-                del item[key]
-    return data, audit
 
 
 def prune_unknown_properties(instance, schema):

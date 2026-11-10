@@ -1,6 +1,5 @@
 __pycache__/
 *.pyc
-config/model.env
 runs/
 selection/
 .env

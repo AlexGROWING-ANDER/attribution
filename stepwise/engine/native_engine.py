@@ -1,27 +1,17 @@
 from __future__ import annotations
-import argparse,base64,copy,hashlib,importlib.util,json,mimetypes,os,secrets,shutil,subprocess,sys,threading,time,urllib.request,urllib.error
+import base64,copy,hashlib,importlib.util,json,os,secrets,shutil,subprocess,sys,threading,time,urllib.error
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
 sys.dont_write_bytecode=True
 HERE=Path(__file__).resolve().parent
-PROJECT=HERE.parent
-sys.path.insert(0,str(HERE))
 sys.path.insert(0,str(HERE))
 from stepwise_support_fast import build_prompt,assemble,PROMPT_VERSION
-ROOT=Path(r'H:\GUI_AGENT_runs\SKILL_D60_20261106')
-sys.path.insert(0,str(HERE/'legacy_engine'))
-sys.path.insert(0,str(HERE/'legacy_engine'))
-sys.path.insert(0,str(HERE))
-from dotenv import dotenv_values
 from jsonschema import Draft202012Validator
-from study.materials import EvidenceStore
 from harness.protocol import OutputProtocol,SourceCatalog,parse_wire_json
-# Legacy single-shot execution is intentionally unused in this experiment.
-from responses_transport import forward_responses,route_request,responses_endpoint
+from study.materials import EvidenceStore
+from responses_transport import forward_responses,route_request
 MODEL='deepseek-v4.1-flash'
-BINARY=[r'E:\node\node.exe',r'C:\Users\ASUS\AppData\Roaming\npm\node_modules\@openai\codex\bin\codex.js']
 
-def read(p):return json.loads(Path(p).read_text(encoding='utf-8-sig'))
 def sha(p):return hashlib.sha256(Path(p).read_bytes()).hexdigest()
 _ALOCKS={}
 _ALOCK_G=threading.Lock()
@@ -35,7 +25,6 @@ def _rm(p):
  try:os.remove(str(p))
  except OSError:pass
 
-_LENIENT = os.environ.get('D60_LENIENT_MERGE') == '1'   # 默认关闭宽松合并。
 
 def atomic(p,d):
  p=Path(p);p.parent.mkdir(parents=True,exist_ok=True)
@@ -61,26 +50,7 @@ def atomic(p,d):
    if last is not None:raise last
    raise
 
-def load_inputs(cid,version):
- # 历史入口通过NATIVE_READY_JSON覆盖默认清单；可移植入口直接接收manifest参数。
- ready=read(Path(os.environ.get('NATIVE_READY_JSON') or (PROJECT/'frozen/READY.json')));p=Path(ready['prediction_manifest'])
- if sha(p)!=ready['prediction_manifest_sha256']:raise ValueError('Prediction manifest hash changed')
- manifest=read(p)
- try:case=next(c for c in manifest['cases'] if c['case_id']==cid)
- except StopIteration:raise ValueError('case %s 不在当前清单 %s 里（检查 NATIVE_READY_JSON）'%(cid,p))
- sr=PROJECT/'skills'/version;skill=sr/'gui-trajectory-attribution';sm=read(sr/'manifest.json')
- for rel,h in sm['files'].items():
-  if sha(skill/rel)!=h:raise ValueError('Skill changed: '+rel)
- schema=read(skill/'references/output.schema.json')
- protocol=OutputProtocol(schema,case['identity'],sm['skill_version'],SourceCatalog(case['inventory']),case['available_steps'])
- store=EvidenceStore(Path(case['evidence_root']),case['inventory'],case['identity']['attempt'],manifest['image_delivery'],case['image_scope'])
- return case,manifest,skill,sm,protocol,store
 
-def credentials():
- if os.environ.get('NATIVE_RECOVERY_OFFLINE')=='1':return 'https://offline.invalid/v1/responses','OFFLINE_SYNTHETIC_NOT_A_CREDENTIAL'
- c=dotenv_values(r'D:\Codex\2026-09-19\new-chat\agent_s\config\.env');base=(c.get('GROUND_URL') or '').rstrip('/');key=c.get('GROUND_API_KEY');del c
- if not key or not base.startswith('https://'):raise ValueError('Company credential unavailable')
- return responses_endpoint(base),key
 
 def page_complete(text,normalized):
  """判断整页是否进了上下文；容忍换行差异与旧版 GBK 误解码。"""
@@ -204,7 +174,7 @@ def finish(out,case,skill,protocol,raw,receipt,meta):
   normalization={'deterministic_edits':changes(before_normalization,prediction),'compile_edits':None,'post_validator_model_repair':False}
   atomic(out/'normalization_audit.json',normalization)
   result=protocol.compile(prediction);atomic(out/'result.json',result)
-  normalization['compile_edits']=changes(prediction,protocol.project_legacy(result))
+  normalization['compile_edits']=changes(prediction,protocol.project(result))
   atomic(out/'normalization_audit.json',normalization)
   meta['normalization_changed']=bool(normalization['deterministic_edits'] or normalization['compile_edits'])
   errors=validator(skill).validate_result(result,references=skill/'references',evidence_root=Path(case['evidence_root']),access_receipt=out/'access_receipt.json')
@@ -213,73 +183,19 @@ def finish(out,case,skill,protocol,raw,receipt,meta):
  except Exception as e:meta.update(state=('infra_failed' if INFRA_PAT.search(str(e)) else 'invalid'),error=type(e).__name__+': '+str(e)[:1800])
  atomic(out/'status.json',meta);return meta
 
-def repair_contract_prompt(previous, protocol):
- errors=[]
- for key in ('validation_errors','schema_errors'):
-  errors.extend(str(x) for x in (previous.get(key) or []))
- if previous.get('error'):errors.append(str(previous['error']))
- errors=list(dict.fromkeys(errors))[:40]
- schema=protocol.wire_schema()
- goals_enum=schema['properties']['goals']['items']['properties']['status']['enum']
- decisions=schema['properties']['outcome']['properties']['decision']['enum']
- prompt=('REPAIR MODE: repair an existing analysis submission; do not perform a new attribution.\n'
-  'Reported errors (including wire/schema/compile errors):\n'+'\n'.join(' - '+x for x in errors)+'\n\n'
-  'Read the existing result.part1.json, result.part2.json, result.part2b.json, result.part2c.json, result.part3.json. '
-  'Use small targeted JSON edits and preserve all unaffected JSON values. Do not repeat the full analysis or print the full JSON.\n'
-  'FIELD CONTRACTS (different fields, never interchange their enums):\n'
-  'goals[i].status accepts ONLY '+json.dumps(goals_enum)+'.\n'
-  'outcome.decision accepts ONLY '+json.dumps(decisions)+'.\n'
-  'A blocked disposition is an outcome decision, NEVER a goal status. Evidence uncertainty is represented by goal status unknown.\n'
-  'Keep goal evidence honest. Never fabricate a screenshot, execution result, unsatisfied goal, candidate or source just to pass. '
-  'Use the facts and evidence already present in the parts. If those facts cannot support a known goal status, retain uncertainty.\n'
-  'JOINT RULES FROM THE UNCHANGED VALIDATOR: If contamination.status is present, outcome.decision must be '
-  'rerun, pending, or precondition_blocked. Do not erase supported contamination to keep a preferred decision. '
-  'precondition_blocked additionally requires a confirmed precondition entry and an unsatisfied goal. '
-  'fail also requires an unsatisfied goal. If uncertainty remains, preserve the uncertainty and choose a permitted '
-  'disposition supported by the existing analysis; do not invent a precondition or goal failure. '
-  'Resolve all constraints jointly, including contamination versus disposition and outcome versus goal statuses; '
-  'do not fix one field by creating a conflict elsewhere. If the evidence or case prevents an honest resolution, explain the unresolved issue and stop.\n'
-  'Only edit those existing part files. Do not load the trajectory Skill again, read logs/images or other files, browse the network, '
-  'run the GUI task, call another model, edit a validator, or invent new facts. '
-  'Do not rename keys or copy fields between parts; avoid duplicate top-level keys across parts. '
-  'Reopen only the edited parts to check JSON syntax and the field enums above. Then reply DONE.\n')
- return errors,prompt
 
-def run_native(case,manifest,skill,sm,protocol,store,out,wall=850,repair=False):
- if repair:out.mkdir(parents=True,exist_ok=True)
- else:out.mkdir(parents=True,exist_ok=False)
- if repair:
-  _stamp=time.strftime('%H%M%S')
-  for _name in ('calls','bridge_audit.json'):
-   _p=out/_name
-   if _p.exists():
-    try:_p.rename(out/('_prev_%s_%s'%(_name,_stamp)))
-    except Exception:pass
+def run_native(case,skill,sm,protocol,store,out,wall=850,*,command,endpoint,key):
+ out.mkdir(parents=True,exist_ok=False)
  w=out/'workspace';w.mkdir(exist_ok=True);home=out/'home';home.mkdir(exist_ok=True)
  _sk=w/'.agents/skills/gui-trajectory-attribution'
- if not (repair and _sk.exists()):shutil.copytree(skill,_sk)
+ shutil.copytree(skill,_sk)
  for _f in (w/'.agents/skills/gui-trajectory-attribution/references').rglob('*.md'):
   try:_f.write_text(_f.read_text(encoding='utf-8-sig'),encoding='utf-8-sig')
   except Exception:pass
  (w/'identity.json').write_text(json.dumps(case['identity'],ensure_ascii=False,indent=2),encoding='utf8')
  # Deterministic textual serialization identical to the existing evidence reader.
  # Binary attachments outside the human-visible gallery are replaced with scope markers.
- pages=[];texts={};events=[];image_paths={};staged=[];current='';members=[]
- if repair and (out/'access_receipt.json').exists():
-  try:
-   _old=read(out/'access_receipt.json').get('events') or []
-   _seen_k=set()
-   for _e in _old:
-    if not _e.get('source'):continue
-    _k=(_e.get('source'),_e.get('operation'),_e.get('sha256'),_e.get('content_complete'))
-    if _k in _seen_k:continue
-    _seen_k.add(_k);events.append(dict(_e))
-  except Exception:pass
- if repair and (out/'access_receipt.json').exists():
-  try:
-   _old=read(out/'access_receipt.json').get('events') or []
-   events.extend([dict(e) for e in _old if e.get('source')])
-  except Exception:pass
+ pages=[];events=[];image_paths={};current='';members=[]
  def flush():
   nonlocal current,members
   if not members:return
@@ -294,7 +210,7 @@ def run_native(case,manifest,skill,sm,protocol,store,out,wall=850,repair=False):
    dst=w/e['source'];dst.parent.mkdir(exist_ok=True,parents=True);shutil.copyfile(src,dst)
    image_paths[str(dst.resolve()).casefold()]={**e,'delivery_sha256':img['delivery_sha256'],'delivery_path':str(dst)}
   else:
-   blocks,ev=store.read(e['source_id']);t='\n'.join(b['text'] for b in blocks if b['type']=='text')
+   blocks,_=store.read(e['source_id']);t='\n'.join(b['text'] for b in blocks if b['type']=='text')
    # Split very long file text into deterministic ranges; record complete coverage only
    # when every range, not merely a read invocation, reaches the main model.
    for offset in range(0,len(t),14000):
@@ -307,7 +223,7 @@ def run_native(case,manifest,skill,sm,protocol,store,out,wall=850,repair=False):
  (w/'input_index.json').write_text(json.dumps(index,ensure_ascii=False,indent=2),encoding='utf8')
  prompt=build_prompt(case,protocol,pages,w)
  (out/'prompt.txt').write_text(prompt,encoding='utf8')
- endpoint,key=credentials();token=secrets.token_urlsafe(28);aud=[];lock=threading.Lock();start=time.monotonic();deadline=start+wall;viewed=set();ranges={};page_hits=set()
+ token=secrets.token_urlsafe(28);aud=[];lock=threading.Lock();start=time.monotonic();deadline=start+wall;viewed=set();ranges={};page_hits=set()
  def clean(s):return s.replace(key,'[REDACTED]').replace(token,'[REDACTED_LOCAL]')
  def public(v):
   if isinstance(v,list):return [public(x) for x in v if not(isinstance(x,dict) and x.get('type')=='reasoning')]
@@ -394,13 +310,7 @@ def run_native(case,manifest,skill,sm,protocol,store,out,wall=850,repair=False):
     atomic(out/'bridge_audit.json',aud)
  server=ThreadingHTTPServer(('127.0.0.1',0),Handler);server.daemon_threads=True;threading.Thread(target=server.serve_forever,daemon=True).start()
  env={k:v for k,v in os.environ.items() if not k.upper().startswith('CODEX_') and not any(s in k.upper() for s in ('API_KEY','TOKEN','SECRET'))};env.update(CODEX_HOME=str(home),USERPROFILE=str(home),HOME=str(home),D60_LOCAL_KEY=token)
- if repair:
-  _prev={}
-  try:_prev=read(out/'status.json')
-  except Exception:pass
-  _errs,prompt=repair_contract_prompt(_prev,protocol)
-  atomic(out/'repair_prompt.txt',{'violations':_errs,'text':prompt,'repair_protocol':'field_contract_repair_v2','original_analysis_not_reexecuted':True})
- cmd=BINARY+['exec','--ignore-user-config','--skip-git-repo-check','--approve-for-me','--json','-C',str(w),'-m',MODEL,'-o',str(out/'answer.txt')]
+ cmd=command+['exec','--ignore-user-config','--skip-git-repo-check','--approve-for-me','--json','-C',str(w),'-m',MODEL,'-o',str(out/'answer.txt')]
  opts={'windows.sandbox':'mxc','default_permissions':'d60-workspace','permissions.d60-workspace.extends':':workspace','permissions.d60-workspace.filesystem':{':root':'deny',':minimal':'read',str(w):'write',str(home):'write',os.environ['CODEX_RUNTIME_DEP']:'read'},'permissions.d60-workspace.network.enabled':False,'model_provider':'d60_company','model_providers.d60_company.name':'Company DeepSeek; explicit same-model approval surrogate','model_providers.d60_company.base_url':f'http://127.0.0.1:{server.server_port}/v1','model_providers.d60_company.env_key':'D60_LOCAL_KEY','model_providers.d60_company.wire_api':'responses','model_providers.d60_company.requires_openai_auth':False,'model_providers.d60_company.request_max_retries':1,'model_providers.d60_company.stream_max_retries':1,'model_providers.d60_company.stream_idle_timeout_ms':650000,'tool_output_token_limit':50000,'features.enable_request_compression':False,'features.skip_host_skill_discovery':True,'features.plugins':False,'features.remote_plugin':False,'features.multi_agent':False}
  def toml(v):
   if isinstance(v,dict):return '{'+','.join(json.dumps(k)+'='+toml(x) for k,x in v.items())+'}'
@@ -414,14 +324,6 @@ def run_native(case,manifest,skill,sm,protocol,store,out,wall=850,repair=False):
   timed=True;subprocess.run(['taskkill','/PID',str(proc.pid),'/T','/F'],capture_output=True,creationflags=subprocess.CREATE_NO_WINDOW);stdout,stderr=proc.communicate(timeout=20)
  finally:server.shutdown();server.server_close()
  (out/'stdout.jsonl').write_text(clean(stdout),encoding='utf8');(out/'stderr.txt').write_text(clean(stderr),encoding='utf8')
- if repair:
-  _by={}
-  for _e in events:
-   _src=_e.get('source')
-   if not _src:continue
-   _cur=_by.get(_src)
-   _by[_src]=_e if (_cur is None or (_e.get('content_complete') and not _cur.get('content_complete'))) else _cur
-  events[:]=list(_by.values())
  atomic(out/'access_receipt.json',receipt())
  raw=(out/'answer.txt').read_text(encoding='utf8') if (out/'answer.txt').exists() else ''
  try:
@@ -438,67 +340,3 @@ def run_native(case,manifest,skill,sm,protocol,store,out,wall=850,repair=False):
   meta.update(state='infra_failed' if INFRA_PAT.search(_err) else 'runtime_failed',error=_err)
   atomic(out/'status.json',meta);return meta
  return finish(out,case,skill,protocol,raw,receipt(),meta)
-
-def run_legacy(case,manifest,skill,sm,protocol,store,out,wall=1800):
- from study.execution import run_codex,deduplicate_request_images
- from study.experiment import exporter
- from stream_transport import stream_chat
- out.mkdir(parents=True,exist_ok=False);store.verify();endpoint,key=credentials();start=time.monotonic();calls=[];lock=threading.Lock()
- exp=exporter();prompt=exp.build_prompt('mobile_agent_v3','rules',skill,include_output_schema=False)+'\n'+public_instruction(case,protocol,True)
- cfg={'directory':str(out/'submissions'),'schema':protocol.schema,'identity':case['identity'],'skill_version':sm['skill_version'],'inventory':case['inventory'],'steps':case['available_steps'],'max_submissions':2,'validator':str(skill/'scripts/validate_result.py'),'references':str(skill/'references'),'evidence_root':str(store.root),'receipt':str(out/'access_receipt.json')}
- def call(request,directory):
-  directory.mkdir(parents=True,exist_ok=True)
-  request,_=deduplicate_request_images(request,store);request['max_tokens']=64000
-  request['max_output_tokens']=64000   # 为历史Responses调用显式设置输出预算。
-  with lock:
-   n=len(calls)+1
-   if n>160:raise ValueError('Case160-call bound')
-   event={'call':n,'sent_at':time.time(),'model':MODEL,'sent_upstream':False};calls.append(event)
-  data=json.dumps(request,ensure_ascii=False).encode();event['request_bytes']=len(data)
-  remaining=wall-(time.monotonic()-start)
-  if remaining<2:raise TimeoutError('Case wall deadline')
-  event['sent_upstream']=True;atomic(out/'provider_calls.json',calls)
-  req=urllib.request.Request(endpoint,data=data,headers={'Authorization':'Bearer '+key,'Content-Type':'application/json'})
-  try:
-   payload=stream_chat(endpoint,key,request,event,min(start+wall,time.monotonic()+600),lambda:atomic(out/'provider_calls.json',calls))
-   event.update(returned_model=payload.get('model'),usage=payload.get('usage'),finish_reason=(payload.get('choices') or [{}])[0].get('finish_reason'))
-   if payload.get('model') not in (MODEL,'deepseek-v4-1-flash-261017'):raise ValueError('Unexpected returned model')
-   if payload.get('choices',[{}])[0].get('finish_reason')=='length':raise ValueError('Output truncated by provider')
-   atomic(directory/'reply.json',{'model':payload.get('model'),'usage':payload.get('usage'),'choices':[{**c,'message':{k:v for k,v in c.get('message',{}).items() if k!='reasoning_content'}} for c in payload.get('choices',[])]})
-   return {'message':payload['choices'][0]['message'],'usage':payload.get('usage'),'finish_reason':payload['choices'][0].get('finish_reason'),'call_id':directory.name}
-  except urllib.error.HTTPError as e:
-   event.update(http_status=e.code,error_body=e.read().decode(errors='replace').replace(key,'[REDACTED]')[:1500]);raise
-  finally:event['finished_at']=time.time();atomic(out/'provider_calls.json',calls)
- meta={'case_id':case['case_id'],'family':'legacy_d60','model':MODEL,'version':sm['skill_version'],'run_directory':str(out)}
- phase='execution'
- try:
-  result=run_codex(store,prompt,out,MODEL,call,wall,BINARY,True,submission_config=cfg,premature_continuations=0)
-  if (out/'submissions/accepted.json').exists():
-   # run_codex returns the canonical compiled object; accepted.json is only audit.
-   pass
-  phase='output_validation'
-  if not isinstance(result,dict):raise ValueError('No run result')
-  projection,parse_audit=parse_wire_json(result['content']);meta['wire_parsed']=True;atomic(out/'selected_projection.json',projection)
-  result=protocol.compile(projection)
-  atomic(out/'result.json',result)
-  receipt=read(out/'access_receipt.json');sources={e['source'] for e in receipt.get('events',[]) if e.get('success') and e.get('content_complete')}
-  errors=validator(skill).validate_result(result,references=skill/'references',evidence_root=Path(case['evidence_root']),access_receipt=out/'access_receipt.json')
-  meta.update(state='validated' if not errors else 'invalid',validation_errors=errors,coverage_complete=len(sources)==len(case['inventory']),delivered_sources=len(sources),required_sources=len(case['inventory']))
- except Exception as e:
-  msg=(type(e).__name__+': '+str(e)).replace(key,'[REDACTED]');unsafe=any('image_url_unsafe' in str(c) for c in calls)
-  meta.update(state='unsafe' if unsafe else ('invalid' if phase=='output_validation' else 'runtime_failed'),error=msg[:2000])
- finally:
-  rp=out/'access_receipt.json'
-  if rp.exists():
-   receipt=read(rp);sources={e['source'] for e in receipt.get('events',[]) if e.get('success') and e.get('content_complete')}
-   meta.update(coverage_complete=len(sources)==len(case['inventory']),delivered_sources=len(sources),required_sources=len(case['inventory']))
-  meta.update(seconds=round(time.monotonic()-start,2),upstream_calls=len(calls));atomic(out/'status.json',meta)
- return meta
-
-def main():
- ap=argparse.ArgumentParser();ap.add_argument('--case',required=True);ap.add_argument('--version',default='v1');ap.add_argument('--repair',action='store_true');ap.add_argument('--family',choices=['native','legacy'],required=True);ap.add_argument('--out',required=True);ap.add_argument('--wall',type=int,default=850);a=ap.parse_args()
- case,manifest,skill,sm,protocol,store=load_inputs(a.case,a.version)
- if a.family=='native':result=run_native(case,manifest,skill,sm,protocol,store,Path(a.out),a.wall,repair=getattr(a,'repair',False))
- else:result=run_legacy(case,manifest,skill,sm,protocol,store,Path(a.out),a.wall)
- print(json.dumps(result,ensure_ascii=True),flush=True)
-if __name__=='__main__':main()
