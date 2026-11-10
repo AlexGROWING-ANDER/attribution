@@ -1,0 +1,85 @@
+{
+  "registry_version": "1.10",
+  "skill_version": "0.15.2",
+  "policy_id": "gui-attribution-policy-4",
+  "templates": {
+    "mobile_agent_v3": {
+      "framework": "mobile_agent_v3",
+      "schema": "hierarchy",
+      "version": "1.0",
+      "trial": false,
+      "taxonomy_path": "taxonomies/mobile_agent_v3.json",
+      "sha256": "52bdac4be3c2dbf99137e54f76279fa41624f75446f0150e709b589d5acba7bd",
+      "source": "agentFailureReasonCategorization/frameworks/mobile_agent_v3/taxonomy.json",
+      "source_sha256": "52bdac4be3c2dbf99137e54f76279fa41624f75446f0150e709b589d5acba7bd"
+    },
+    "agent_s2_initial_recovery": {
+      "framework": "agent_s2",
+      "schema": "hierarchy",
+      "version": "0.1-trial",
+      "trial": true,
+      "taxonomy_path": "taxonomies/agent_s2_initial_recovery.json",
+      "sha256": "b92fcfd57d8d2fee012a3e4208ca961d869ad4c0f20377e743b192b5efcf408a",
+      "source": "agentFailureReasonCategorization/frameworks/agent_s2_initial_recovery/taxonomy.json",
+      "source_sha256": "e7d0b1ae27c8a3e84d9572810dce21e59ebb7e1468a200cc92ce60801ab9f383"
+    },
+    "uipath": {
+      "framework": "uipath",
+      "schema": "dimensions",
+      "version": "1.1",
+      "trial": false,
+      "taxonomy_path": "taxonomies/uipath.json",
+      "sha256": "9eb4531f0567267520a551892777fccb095027c3024a7394bd525c7f6ee366cb",
+      "source": "agentFailureReasonCategorization/frameworks/uipath/taxonomy.json",
+      "source_sha256": "a886f8dc385aab2606cf725d5f76ae0237579fd6e3c619df55fe1a77f8ec5cea"
+    }
+  },
+  "project_extensions": {
+    "preconditions": {
+      "status": "project_template_extension",
+      "website_mapping": {
+        "mobile_agent_v3": {
+          "l1": "precondition",
+          "l2": [
+            "account_permission",
+            "insufficient_content",
+            "unavailable_option",
+            "no_matching_result",
+            "capacity_business_limit"
+          ],
+          "l3": null
+        },
+        "agent_s2_initial_recovery": {
+          "l1": "precondition",
+          "l2": [
+            "account_permission",
+            "insufficient_content",
+            "unavailable_option",
+            "no_matching_result",
+            "capacity_business_limit"
+          ],
+          "l3": null
+        },
+        "uipath": {
+          "module": null,
+          "function": "E2",
+          "mechanisms": [
+            "account_permission",
+            "insufficient_content",
+            "unavailable_option",
+            "no_matching_result",
+            "capacity_business_limit"
+          ],
+          "object": "affected existing object or null"
+        }
+      },
+      "types": [
+        "account_permission",
+        "insufficient_content",
+        "unavailable_option",
+        "no_matching_result",
+        "capacity_business_limit"
+      ]
+    }
+  }
+}

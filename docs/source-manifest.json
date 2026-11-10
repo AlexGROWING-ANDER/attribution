@@ -1,0 +1,156 @@
+{
+  "source_batch": "D60_AUTORESEARCH_20261110/rounds/r00_v3",
+  "cli_version": "0.166.0",
+  "skill_version": "0.15.2",
+  "protocol": "per-step local judgments followed by global synthesis",
+  "files": [
+    {
+      "source": "code/native_engine.py",
+      "export": "stepwise/engine/native_engine.py",
+      "source_sha256": "cde41d09934aba1002a9ddd4da5d45fe52146d127ed1c0ba566328544525f411"
+    },
+    {
+      "source": "code/candidate_bridge.py",
+      "export": "stepwise/engine/candidate_bridge.py",
+      "source_sha256": "c9f9f16d1c98065b6817eebfebda25ee6612476ab7948d190c3b9cc15c7e787d"
+    },
+    {
+      "source": "code/stream_transport_fast.py",
+      "export": "stepwise/engine/stream_transport_fast.py",
+      "source_sha256": "7f603179ef147d38d30b21a4061db24fadfce38715350178478800d9dc6b6a98"
+    },
+    {
+      "source": "code/stepwise_support_fast.py",
+      "export": "stepwise/engine/stepwise_support_fast.py",
+      "source_sha256": "dfc07863c15a2ec69901c46638ec43bbc1f32fd7122e2be712d97eb694089e90"
+    },
+    {
+      "source": "code/stepwise_support_v2.py",
+      "export": "stepwise/engine/stepwise_support_v2.py",
+      "source_sha256": "d859d13454e880f3239f45f450f9e2aab6a0a2eefcbe4d1defb3366a847cd051"
+    },
+    {
+      "source": "code/io.ps1",
+      "export": "stepwise/engine/io.ps1",
+      "source_sha256": "7c1cda94bc6eaba6e1a77806e4e54d5f840f27c11a8013ba7f7c44ce2f1f951b"
+    },
+    {
+      "source": "code/validate_result.py",
+      "export": "stepwise/engine/validate_result.py",
+      "source_sha256": "e692a91f7a2a0f2c46d542af45b5a130609f270ca9f98296fa13fdb34fdd9e66"
+    },
+    {
+      "source": "code/legacy_engine/harness/__init__.py",
+      "export": "stepwise/engine/legacy_engine/harness/__init__.py",
+      "source_sha256": "fcaece8f4fde9a59b389ee1b0d925778127a48d5685fd04715cde6610ccffb56"
+    },
+    {
+      "source": "code/legacy_engine/harness/protocol.py",
+      "export": "stepwise/engine/legacy_engine/harness/protocol.py",
+      "source_sha256": "ed3c63ed774d14615db85c224e3ca87156baf1ec1acc5970e8cd15cdcdfac1a1"
+    },
+    {
+      "source": "code/legacy_engine/harness/storage.py",
+      "export": "stepwise/engine/legacy_engine/harness/storage.py",
+      "source_sha256": "2bd30ea7f233b573d8a2748100eb0c527611c5532362339c9d8785dcc2a9c5a4"
+    },
+    {
+      "source": "code/legacy_engine/study/__init__.py",
+      "export": "stepwise/engine/legacy_engine/study/__init__.py",
+      "source_sha256": "87c17a9d21846c3e28673f55e1bb46a10b1ebba05ce276c9733daead5ae1c874"
+    },
+    {
+      "source": "code/legacy_engine/study/materials.py",
+      "export": "stepwise/engine/legacy_engine/study/materials.py",
+      "source_sha256": "53d6e69070c842c3b68451296c265afdccb53d5f955b0ab92d6cb3f3012e1f67"
+    },
+    {
+      "source": "code/legacy_engine/study/image_scope.py",
+      "export": "stepwise/engine/legacy_engine/study/image_scope.py",
+      "source_sha256": "ef72df6573af52c0ac82b2bb7084388b6fcea7e0a95820a86adc72ed48b8017b"
+    }
+  ],
+  "portability_changes": [
+    {
+      "file": "stepwise/engine/native_engine.py",
+      "change": "PowerShell sandbox runtime location comes from CODEX_RUNTIME_DEP; protocol and model judgments unchanged"
+    },
+    {
+      "file": "stepwise/engine/native_engine.py",
+      "change": "Report actual exported strict validator SHA256 instead of stale literal metadata"
+    },
+    {
+      "file": "stepwise/run_case.py",
+      "change": "External manifest/environment/CLI configuration, exact version and input/version binding checks; preserve original failure classification"
+    },
+    {
+      "file": "stepwise/run_batch.py",
+      "change": "New bounded process dispatcher; no GT access, automatic Skill edits or final-validator model repair"
+    },
+    {
+      "file": "stepwise/engine/validate_result.py",
+      "change": "CLI default references directory and explicit --references argument; validation rules unchanged"
+    },
+    {
+      "file": "stepwise/engine/native_engine.py",
+      "change": "Persist normalization and compile field-change audit without changing the historical normalization rules"
+    }
+  ],
+  "scope": "Native stepwise path only; dormant legacy single-shot routes are not exposed by the new entry point",
+  "historical_first_startup": {
+    "validated": 47,
+    "invalid": 13,
+    "total": 60
+  },
+  "not_same_batch_as": "ONCE60 51+9 cumulative60",
+  "review_changes": [
+    "Honor PAUSE before first dispatch and before worker launch",
+    "Load existing failures before resume dispatch",
+    "Validate plain case IDs; gallery counts and source IDs; template identity",
+    "Validate existing result presence and bound identity; distinguish fresh/preserved outcomes"
+  ],
+  "editorial_changes": {
+    "python_comments_only": [
+      "stepwise/engine/native_engine.py",
+      "stepwise/engine/candidate_bridge.py",
+      "runner/native_case_runner.py"
+    ],
+    "python_ast_unchanged": true,
+    "skill_files_modified": false,
+    "legacy_readme_claims": "Limited to observable delivery; removed guarantees of model attention",
+    "validation_scope": "Comment cleanup only; later prompt construction/metadata changes are recorded separately"
+  },
+  "prompt_revision": {
+    "version": "stepwise-prompt-r2",
+    "template": "stepwise/prompts/stepwise_en.txt",
+    "submission_protocol": "stepwise/protocols/submission_protocol.md",
+    "historical_example": "docs/examples/prompt_case001.txt",
+    "r1_example": "docs/examples/prompt_case001_r1.txt",
+    "candidate_example": "docs/examples/prompt_case001_optimized.txt",
+    "startup_characters": 1096,
+    "protocol_characters": 2982,
+    "combined_characters": 4078,
+    "skill_changed": false,
+    "schema_changed": false,
+    "assembly_logic_changed": false,
+    "model_run_completed": true,
+    "model_smoke_cases": 2,
+    "model_smoke_validated": 2,
+    "model_smoke_decision_matches": 1,
+    "full_selected60_run_completed": false
+  },
+  "prompt_revision_history": [
+    {
+      "version": "stepwise-prompt-r1",
+      "template": "stepwise/prompts/stepwise_en.txt",
+      "historical_example": "docs/examples/prompt_case001.txt",
+      "candidate_example": "docs/examples/prompt_case001_optimized.txt",
+      "before_characters": 7555,
+      "after_characters": 5130,
+      "schema_changed": false,
+      "skill_changed": false,
+      "assembly_logic_changed": false,
+      "model_run_completed": false
+    }
+  ]
+}

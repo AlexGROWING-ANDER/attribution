@@ -1,0 +1,66 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "step",
+    "verdict",
+    "summary",
+    "evidence"
+  ],
+  "properties": {
+    "step": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "verdict": {
+      "enum": [
+        "reasonable",
+        "error",
+        "uncertain"
+      ]
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 1
+    },
+    "evidence": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "source_id",
+          "phase",
+          "locator",
+          "observation"
+        ],
+        "properties": {
+          "source_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "phase": {
+            "enum": [
+              "before_action",
+              "after_action",
+              "decision",
+              "execution",
+              "metadata",
+              "final_observation",
+              "unknown"
+            ]
+          },
+          "locator": {
+            "type": "string",
+            "minLength": 1
+          },
+          "observation": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    }
+  }
+}

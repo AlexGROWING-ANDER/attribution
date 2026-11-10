@@ -5,8 +5,8 @@ from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
 sys.dont_write_bytecode=True
 HERE=Path(__file__).resolve().parent
 ROOT=HERE.parent
-# 目录约定：本仓 src/ 下放运行器，src/engine/ 是随仓携带的依赖（study/ 与 harness/）
-sys.path.insert(0,str(HERE.parent/'engine'))  # 随仓携带的 study/ 与 harness/
+# 运行器位于runner/，材料与输出协议依赖位于仓库根目录的engine/。
+sys.path.insert(0,str(HERE.parent/'engine'))  # 加载随仓提供的study与harness模块。
 sys.path.insert(0,str(HERE))
 from dotenv import dotenv_values
 from jsonschema import Draft202012Validator
@@ -178,7 +178,7 @@ def run_native(case,manifest,skill,sm,protocol,store,out,wall=850):
      return v
     atomic(d/'responses_public.json',omit_images(public(body)))
     atomic(d/'route.json',{'purpose':purpose,'upstream_model':MODEL})
-    # 送达记账：这一轮模型确实拿到的日志页与图片
+    # 记录实际送达请求的日志页和图片。
     if purpose=='main_agent':
      for page,cid in newpages:
       if page['path'] not in page_hits:

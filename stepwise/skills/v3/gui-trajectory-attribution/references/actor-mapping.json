@@ -1,0 +1,210 @@
+{
+  "hierarchy": {
+    "mobile_agent_v3": {
+      "manager": [
+        "manager",
+        "planner"
+      ],
+      "executor": [
+        "executor",
+        "operator",
+        "grounding",
+        "grounder"
+      ],
+      "reflector": [
+        "reflector",
+        "reflection",
+        "action_reflector"
+      ],
+      "notetaker": [
+        "notetaker",
+        "memory"
+      ],
+      "controller": [
+        "controller",
+        "adapter",
+        "device_execution"
+      ]
+    },
+    "agent_s2": {
+      "manager": [
+        "manager",
+        "planner"
+      ],
+      "worker": [
+        "worker",
+        "executor",
+        "operator"
+      ],
+      "reflection": [
+        "reflection",
+        "reflector"
+      ],
+      "grounding": [
+        "grounding",
+        "grounder"
+      ],
+      "controller": [
+        "controller",
+        "adapter",
+        "device_execution"
+      ]
+    }
+  },
+  "dimensions": {
+    "uipath": {
+      "planner": [
+        "planner"
+      ],
+      "grounder": [
+        "grounder",
+        "grounding"
+      ],
+      "memory": [
+        "memory"
+      ],
+      "environment_app": [
+        "app",
+        "environment"
+      ]
+    }
+  },
+  "external_actors": {
+    "app": [
+      "app",
+      "environment"
+    ],
+    "precondition": [
+      "precondition"
+    ],
+    "device": [
+      "adapter",
+      "controller",
+      "device_execution"
+    ]
+  },
+  "stage_constraints": {
+    "mobile_agent_v3": {
+      "manager": [
+        "understanding",
+        "perception",
+        "state_estimation",
+        "planning",
+        "verification"
+      ],
+      "executor": [
+        "understanding",
+        "perception",
+        "state_estimation",
+        "planning",
+        "grounding",
+        "command_generation",
+        "verification"
+      ],
+      "reflector": [
+        "perception",
+        "state_estimation",
+        "verification",
+        "planning"
+      ],
+      "notetaker": [
+        "memory",
+        "state_estimation"
+      ],
+      "controller": [
+        "perception",
+        "adaptation",
+        "execution"
+      ]
+    },
+    "agent_s2": {
+      "manager": [
+        "understanding",
+        "perception",
+        "state_estimation",
+        "planning",
+        "verification"
+      ],
+      "worker": [
+        "understanding",
+        "perception",
+        "state_estimation",
+        "planning",
+        "grounding",
+        "command_generation",
+        "verification"
+      ],
+      "reflection": [
+        "understanding",
+        "perception",
+        "state_estimation",
+        "planning",
+        "verification"
+      ],
+      "grounding": [
+        "perception",
+        "grounding",
+        "command_generation"
+      ],
+      "controller": [
+        "perception",
+        "adaptation",
+        "execution"
+      ]
+    },
+    "uipath": {
+      "planner": [
+        "understanding",
+        "perception",
+        "state_estimation",
+        "planning",
+        "command_generation",
+        "verification",
+        "memory"
+      ],
+      "grounder": [
+        "perception",
+        "grounding",
+        "command_generation"
+      ],
+      "memory": [
+        "memory",
+        "state_estimation"
+      ]
+    }
+  },
+  "external_stage_constraints": {
+    "app": [
+      "environment"
+    ],
+    "precondition": [
+      "environment"
+    ],
+    "device": [
+      "perception",
+      "adaptation",
+      "execution"
+    ]
+  },
+  "label_stage_constraints": {
+    "screenshot_failure": [
+      "perception",
+      "execution"
+    ],
+    "coordinate_mismatch": [
+      "adaptation",
+      "execution"
+    ],
+    "text_encoding_error": [
+      "adaptation",
+      "execution"
+    ],
+    "action_transmission_failure": [
+      "adaptation",
+      "execution"
+    ],
+    "invalid_action_format": [
+      "command_generation"
+    ]
+  }
+}

@@ -1,0 +1,7 @@
+Use $gui-trajectory-attribution natively for the current attempt. Load its required references and use its analysis workflow and attribution rules.
+
+TASK IDENTITY: __TASK_IDENTITY_JSON__
+
+Before analyzing the trajectory or submitting records, read submission_protocol.md, input_index.json, step_index.json, step_record.schema.json and global_summary.schema.json. Startup reads may run in parallel as separate calls with adequate output limits. The protocol specifies tools, per-step submission and completion conditions; the Skill supplies the analysis method.
+
+Work only with this attempt's materials in the prepared workspace. The caller assembles and strictly validates the final result.json.
