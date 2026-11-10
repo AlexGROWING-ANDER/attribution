@@ -118,29 +118,15 @@
     "version": "stepwise-prompt-r2",
     "template": "stepwise/prompts/stepwise_en.txt",
     "submission_protocol": "stepwise/protocols/submission_protocol.md",
-    "historical_example": "docs/examples/prompt_case001.txt",
-    "r1_example": "docs/examples/prompt_case001_r1.txt",
-    "candidate_example": "docs/examples/prompt_case001_optimized.txt",
     "startup_characters": 1096,
     "protocol_characters": 2982,
     "combined_characters": 4078,
     "skill_changed": false,
     "schema_changed": false,
-    "assembly_logic_changed": false
+    "assembly_logic_changed": false,
+    "example": "docs/examples/prompt_case001.txt",
+    "chinese_example": "docs/examples/prompt_case001_中文.md"
   },
-  "prompt_revision_history": [
-    {
-      "version": "stepwise-prompt-r1",
-      "template": "stepwise/prompts/stepwise_en.txt",
-      "historical_example": "docs/examples/prompt_case001.txt",
-      "candidate_example": "docs/examples/prompt_case001_optimized.txt",
-      "before_characters": 7555,
-      "after_characters": 5130,
-      "schema_changed": false,
-      "skill_changed": false,
-      "assembly_logic_changed": false
-    }
-  ],
   "transport_revision": {
     "transport": "responses_passthrough",
     "cli_version": "0.166.0",
