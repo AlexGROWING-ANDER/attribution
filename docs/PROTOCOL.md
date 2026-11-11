@@ -7,7 +7,8 @@
 | 文件 | 用途 |
 |---|---|
 | `stepwise/prompts/stepwise_en.txt` | 实际启动Prompt模板 |
-| `stepwise/protocols/submission_protocol.md` | 模型实际读取的提交协议 |
+| `stepwise/protocols/submission_protocol.md` | Windows模型实际读取的提交协议 |
+| `stepwise/protocols/submission_protocol_posix.md` | macOS/Linux模型实际读取的提交协议 |
 | `stepwise/skills/v3/gui-trajectory-attribution/SKILL.md` | 分析流程、证据要求与归因规则入口 |
 | `docs/examples/prompt_case001.txt` | 当前英文Prompt示例 |
 | `docs/examples/prompt_case001_中文.md` | Prompt与提交协议的中文说明 |
@@ -27,7 +28,7 @@
   → status.json：validated／invalid／runtime_failed
 ```
 
-通过PowerShell调用`io.ps1`传递单步小JSON，按数字顺序保存。单步记录包含`step`、`verdict`、`summary`、`evidence`；`verdict`是局部判断，不直接等于主要根因。
+Windows通过PowerShell调用`io.ps1`，macOS/Linux调用`io.py`传递单步小JSON，按数字顺序保存。macOS/Linux启动时会把工作区协议中的`python3`固定为执行器实际使用的Python绝对路径，避免沙箱内`PATH`落到不可用的系统解释器。两条路径执行相同的字段、步序、来源和revision前缀检查。单步记录包含`step`、`verdict`、`summary`、`evidence`；`verdict`是局部判断，不直接等于主要根因。
 
 新读取的直接观察可另存为`revision_NNN.json`。原始步骤、verdict和证据前缀保持不变，补充内容追加在后。全局提交和本地完成检查均会检查这项约束，拒绝时返回具体冲突位置。
 

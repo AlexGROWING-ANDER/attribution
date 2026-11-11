@@ -133,11 +133,32 @@ def cli_command() -> list[str]:
         ):
             raise ValueError("CODEX_BINARY must be a JSON array of command arguments")
     else:
-        node = shutil.which("node")
-        npm_root = Path(os.environ.get("APPDATA", "")) / "npm/node_modules/@openai/codex/bin/codex.js"
-        if not node or not npm_root.is_file():
-            raise ValueError("Set CODEX_BINARY, or install Node and @openai/codex@0.166.0")
-        command = [node, str(npm_root)]
+        if os.name == "nt":
+            node = shutil.which("node")
+            npm_root = Path(os.environ.get("APPDATA", "")) / "npm/node_modules/@openai/codex/bin/codex.js"
+            if not node or not npm_root.is_file():
+                raise ValueError("Set CODEX_BINARY, or install Node and @openai/codex@0.166.0")
+            command = [node, str(npm_root)]
+        else:
+            codex = shutil.which("codex")
+            if codex:
+                command = [codex]
+            else:
+                node, npm = shutil.which("node"), shutil.which("npm")
+                npm_root = None
+                if node and npm:
+                    try:
+                        completed_npm = subprocess.run(
+                            [npm, "root", "-g"], capture_output=True, text=True, timeout=20,
+                            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                        )
+                        if completed_npm.returncode == 0 and completed_npm.stdout.strip():
+                            npm_root = Path(completed_npm.stdout.strip()) / "@openai/codex/bin/codex.js"
+                    except (OSError, subprocess.SubprocessError):
+                        npm_root = None
+                if not node or npm_root is None or not npm_root.is_file():
+                    raise ValueError("Set CODEX_BINARY, or install Codex CLI 0.166.0")
+                command = [node, str(npm_root)]
     completed = subprocess.run(
         command + ["--version"], capture_output=True, text=True, timeout=20,
         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
@@ -187,29 +208,27 @@ def main() -> int:
             raise ValueError("Runtime or Skill changed since batch dispatch")
     load_environment(args.env_file)
     engine = load_engine()
+    platform_runtime = engine.current_runtime()
     manifest_digest = args.manifest_sha256 or sha256(args.manifest.resolve())
     loaded = load_inputs(engine, args.manifest.resolve(), args.case, manifest_digest)
     command = cli_command()
-    runtime = Path(os.environ.get(
-        "CODEX_RUNTIME_DEP",
-        str(Path.home() / ".cache/codex-runtimes/codex-primary-runtime/dependencies/native/powershell"),
-    )).resolve()
-    if not runtime.is_dir():
-        raise ValueError("Set CODEX_RUNTIME_DEP to the installed Codex PowerShell runtime directory")
+    if platform_runtime.requires_runtime_dep():
+        runtime_dep = platform_runtime.resolve_runtime_dep(os.environ.get("CODEX_RUNTIME_DEP"))
+        os.environ["CODEX_RUNTIME_DEP"] = str(runtime_dep)
     if args.out.resolve().exists():
         raise ValueError("Output already exists; choose a new directory to preserve prior attempts")
     if args.preflight:
         print(json.dumps({
             "state": "preflight_passed", "case_id": args.case,
+            "platform": platform_runtime.name, "submission_helper": platform_runtime.helper_name,
             "cli_version": "0.166.0", "skill_version": loaded[3]["skill_version"],
             "registered_sources": len(loaded[0]["inventory"]),
             "registered_images": loaded[0]["image_count"], "paid_calls": 0,
         }, ensure_ascii=False))
         return 0
-    if os.name != "nt":
-        raise ValueError("Native execution of this frozen mxc sandbox snapshot requires Windows")
+    if platform_runtime.name not in ("windows", "macos", "linux"):
+        raise ValueError("Native execution supports Windows, macOS, and Linux")
     endpoint, key = credentials()
-    os.environ["CODEX_RUNTIME_DEP"] = str(runtime)
     case, _, skill, skill_manifest, protocol, store = loaded
     status = engine.run_native(
         case, skill, skill_manifest, protocol, store, args.out.resolve(), args.wall, command=command, endpoint=endpoint, key=key,
@@ -218,6 +237,8 @@ def main() -> int:
         "manifest_sha256": manifest_digest,
         "runtime_manifest_sha256": sha256(REPO / "RELEASE_MANIFEST.json"),
         "skill_manifest_sha256": sha256(ROOT / "skills/v3/manifest.json"),
+        "platform": platform_runtime.name,
+        "submission_helper": platform_runtime.helper_name,
         "prompt_version": engine.PROMPT_VERSION,
     })
     print(json.dumps(status, ensure_ascii=False))

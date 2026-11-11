@@ -112,5 +112,25 @@
     "scope": "Replace local Responses/Chat conversion with native Responses forwarding; keep Skill, prompt, submission contracts and validator rules unchanged",
     "no_chat_fallback": true,
     "response_bytes_rebuilt": false
+  },
+  "platform_adapter": {
+    "scope": "Keep the Windows native snapshot unchanged while adding macOS and Linux host support",
+    "windows": {
+      "sandbox": "windows.sandbox=mxc",
+      "submission_helper": "stepwise/engine/io.ps1",
+      "protocol": "stepwise/protocols/submission_protocol.md",
+      "process_cleanup": "taskkill /T /F"
+    },
+    "macos_linux": {
+      "sandbox": "permission profile without windows.sandbox; Seatbelt on macOS and bubblewrap on Linux",
+      "submission_helper": "stepwise/engine/io.py",
+      "protocol": "stepwise/protocols/submission_protocol_posix.md",
+      "process_cleanup": "POSIX process group terminate/kill"
+    },
+    "files": {
+      "stepwise/engine/platform_runtime.py": "a19974814fbb8f931e4c3d82eec55d0ef0c4c441d708441177a0015580caf5fd",
+      "stepwise/engine/io.py": "e0e2b12c8136fd41ee9508b1863835af61f93103e34de9bf453cfc5456bbf132",
+      "stepwise/protocols/submission_protocol_posix.md": "518c00044bba54b28792a583ab0055d801b7c0dc170e1eaaf045c3460de59398"
+    }
   }
 }

@@ -10,7 +10,9 @@ from jsonschema import Draft202012Validator
 from harness.protocol import OutputProtocol,SourceCatalog,parse_wire_json
 from study.materials import EvidenceStore
 from responses_transport import forward_responses,route_request
+import platform_runtime
 MODEL='deepseek-v4.1-flash'
+current_runtime=platform_runtime.current_runtime
 
 def sha(p):return hashlib.sha256(Path(p).read_bytes()).hexdigest()
 _ALOCKS={}
@@ -69,7 +71,8 @@ import re as _re
 # 沙箱初始化与连接错误的分类特征；实际模型调用以调用日志为准。
 INFRA_PAT = _re.compile(r'failed to create session|native mxc is unavailable|failed to prepare fs sandbox|'
                         r'error creating thread|code -32603|failed to prepare MXC sandbox|'
-                        r'502 bad gateway|tunnel connection failed|bad gateway|connection reset by peer', _re.I)
+                        r'502 bad gateway|tunnel connection failed|bad gateway|connection reset by peer|'
+                        r'sandbox-exec|sandbox_apply|seatbelt', _re.I)
 def normalize_refs(prediction):
  """删掉引用了不存在 evidence id 的位置；success 时恢复机会置 not_applicable。"""
  evs=prediction.get('evidence') or []
@@ -309,19 +312,29 @@ def run_native(case,skill,sm,protocol,store,out,wall=850,*,command,endpoint,key)
     if item is not None:item['finished_at']=time.time()
     atomic(out/'bridge_audit.json',aud)
  server=ThreadingHTTPServer(('127.0.0.1',0),Handler);server.daemon_threads=True;threading.Thread(target=server.serve_forever,daemon=True).start()
- env={k:v for k,v in os.environ.items() if not k.upper().startswith('CODEX_') and not any(s in k.upper() for s in ('API_KEY','TOKEN','SECRET'))};env.update(CODEX_HOME=str(home),USERPROFILE=str(home),HOME=str(home),D60_LOCAL_KEY=token)
- cmd=command+['exec','--ignore-user-config','--skip-git-repo-check','--approve-for-me','--json','-C',str(w),'-m',MODEL,'-o',str(out/'answer.txt')]
- opts={'windows.sandbox':'mxc','default_permissions':'d60-workspace','permissions.d60-workspace.extends':':workspace','permissions.d60-workspace.filesystem':{':root':'deny',':minimal':'read',str(w):'write',str(home):'write',os.environ['CODEX_RUNTIME_DEP']:'read'},'permissions.d60-workspace.network.enabled':False,'model_provider':'d60_company','model_providers.d60_company.name':'Company DeepSeek; explicit same-model approval surrogate','model_providers.d60_company.base_url':f'http://127.0.0.1:{server.server_port}/v1','model_providers.d60_company.env_key':'D60_LOCAL_KEY','model_providers.d60_company.wire_api':'responses','model_providers.d60_company.requires_openai_auth':False,'model_providers.d60_company.request_max_retries':1,'model_providers.d60_company.stream_max_retries':1,'model_providers.d60_company.stream_idle_timeout_ms':650000,'tool_output_token_limit':50000,'features.enable_request_compression':False,'features.skip_host_skill_discovery':True,'features.plugins':False,'features.remote_plugin':False,'features.multi_agent':False}
+ runtime=platform_runtime.current_runtime()
+ env={k:v for k,v in os.environ.items() if not k.upper().startswith('CODEX_') and not any(s in k.upper() for s in ('API_KEY','TOKEN','SECRET'))};env.update(CODEX_HOME=str(home),HOME=str(home),D60_LOCAL_KEY=token)
+ if runtime.is_windows():env['USERPROFILE']=str(home)
+ cmd=command+['exec','--ignore-user-config','--skip-git-repo-check']+runtime.approval_args()+['--json','-C',str(w),'-m',MODEL,'-o',str(out/'answer.txt')]
+ read_roots=[Path(sys.executable).resolve().parent,Path(sys.prefix).resolve(),Path(getattr(sys,'base_prefix',sys.prefix)).resolve()] if not runtime.is_windows() else []
+ if not runtime.is_windows():
+  for part in command:
+   path=Path(part).expanduser()
+   if path.is_absolute() and path.exists():
+    path=path.resolve();read_roots.append(path if path.is_dir() else path.parent)
+ opts={'model_provider':'d60_company','model_providers.d60_company.name':'Company DeepSeek; explicit same-model approval surrogate','model_providers.d60_company.base_url':f'http://127.0.0.1:{server.server_port}/v1','model_providers.d60_company.env_key':'D60_LOCAL_KEY','model_providers.d60_company.wire_api':'responses','model_providers.d60_company.requires_openai_auth':False,'model_providers.d60_company.request_max_retries':1,'model_providers.d60_company.stream_max_retries':1,'model_providers.d60_company.stream_idle_timeout_ms':650000,'tool_output_token_limit':50000,'features.enable_request_compression':False,'features.skip_host_skill_discovery':True,'features.plugins':False,'features.remote_plugin':False,'features.multi_agent':False}
+ runtime_dep=os.environ.get('CODEX_RUNTIME_DEP') if runtime.is_windows() else None
+ opts.update(runtime.sandbox_options(w,home,runtime_dep,read_roots));opts.update(runtime.approval_options())
  def toml(v):
   if isinstance(v,dict):return '{'+','.join(json.dumps(k)+'='+toml(x) for k,x in v.items())+'}'
   return json.dumps(v,ensure_ascii=False)
  for k,v in opts.items():cmd+=['-c',k+'='+toml(v)]
- cmd+=['-'];atomic(out/'launch.json',{'argv':cmd,'family':'native_d60','skill_manifest_sha256':sha(skill.parent/'manifest.json'),'wall_seconds':wall,'max_calls':160,'permission_policy':'root deny with workspace and minimal runtime allow','native_instructions':True,'approval_surrogate':MODEL})
- proc=subprocess.Popen(cmd,cwd=w,env=env,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,encoding='utf8',errors='replace',creationflags=subprocess.CREATE_NO_WINDOW)
+ cmd+=['-'];atomic(out/'launch.json',{'argv':cmd,'family':'native_d60','platform':runtime.name,'submission_helper':runtime.helper_name,'skill_manifest_sha256':sha(skill.parent/'manifest.json'),'wall_seconds':wall,'max_calls':160,'permission_policy':'root deny with workspace and minimal runtime allow','native_instructions':True,'approval_surrogate':MODEL})
+ proc=subprocess.Popen(cmd,cwd=w,env=env,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,encoding='utf8',errors='replace',**runtime.popen_kwargs())
  atomic(out/'pid.json',{'pid':proc.pid,'start':time.time()});timed=False
  try:stdout,stderr=proc.communicate(prompt,timeout=max(1,deadline-time.monotonic()))
  except subprocess.TimeoutExpired:
-  timed=True;subprocess.run(['taskkill','/PID',str(proc.pid),'/T','/F'],capture_output=True,creationflags=subprocess.CREATE_NO_WINDOW);stdout,stderr=proc.communicate(timeout=20)
+  timed=True;runtime.kill_process_tree(proc);stdout,stderr=proc.communicate(timeout=20)
  finally:server.shutdown();server.server_close()
  (out/'stdout.jsonl').write_text(clean(stdout),encoding='utf8');(out/'stderr.txt').write_text(clean(stderr),encoding='utf8')
  atomic(out/'access_receipt.json',receipt())
@@ -334,7 +347,7 @@ def run_native(case,skill,sm,protocol,store,out,wall=850,*,command,endpoint,key)
   failure={'case_id':case['case_id'],'state':'infra_failed' if network_interruption else 'invalid','protocol':'stepwise_fast_v2','prompt_version':PROMPT_VERSION,'validator_patch_version':'answer-delivery-direction-v1','validator_sha256':sha(HERE/'validate_result.py'),'error':terminal_error if network_interruption else 'Step assembly: '+str(exc),'assembly_error':str(exc),'returncode':proc.returncode,'timed_out':timed,'seconds':round(time.monotonic()-start,2),'post_validator_model_repair':False}
   atomic(out/'status.json',failure);return failure
  complete=len({e['source'] for e in events})==len(case['inventory'])
- meta={'case_id':case['case_id'],'family':'native_d60','model':MODEL,'version':sm['skill_version'],'returncode':proc.returncode,'timed_out':timed,'coverage_complete':complete,'delivered_sources':len(events),'required_sources':len(case['inventory']),'delivered_images':len(viewed),'required_images':case['image_count'],'completed_pages':len(page_hits),'required_pages':len(pages),'upstream_calls':sum(bool(x.get('sent_upstream')) for x in aud),'bridge_requests':len(aud),'seconds':round(time.monotonic()-start,2),'run_directory':str(out),'approval_surrogate_not_official_model':True,'protocol':'stepwise_fast_v2','prompt_version':PROMPT_VERSION,'validator_patch_version':'answer-delivery-direction-v1','validator_sha256':sha(HERE/'validate_result.py'),'post_validator_model_repair':False}
+ meta={'case_id':case['case_id'],'family':'native_d60','platform':runtime.name,'submission_helper':runtime.helper_name,'model':MODEL,'version':sm['skill_version'],'returncode':proc.returncode,'timed_out':timed,'coverage_complete':complete,'delivered_sources':len(events),'required_sources':len(case['inventory']),'delivered_images':len(viewed),'required_images':case['image_count'],'completed_pages':len(page_hits),'required_pages':len(pages),'upstream_calls':sum(bool(x.get('sent_upstream')) for x in aud),'bridge_requests':len(aud),'seconds':round(time.monotonic()-start,2),'run_directory':str(out),'approval_surrogate_not_official_model':True,'protocol':'stepwise_fast_v2','prompt_version':PROMPT_VERSION,'validator_patch_version':'answer-delivery-direction-v1','validator_sha256':sha(HERE/'validate_result.py'),'post_validator_model_repair':False}
  if (proc.returncode or timed) and not raw:
   _err=(stderr[-2200:] if stderr else 'No final output')
   meta.update(state='infra_failed' if INFRA_PAT.search(_err) else 'runtime_failed',error=_err)

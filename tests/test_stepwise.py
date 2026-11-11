@@ -6,6 +6,7 @@ import hashlib
 import importlib.util
 import json
 from pathlib import Path
+import shlex
 import shutil
 import subprocess
 import sys
@@ -21,6 +22,7 @@ import run_case
 import run_batch
 
 ENGINE = run_case.load_engine()
+import platform_runtime
 from jsonschema import Draft202012Validator
 from harness.protocol import digest
 import stepwise_support_v2 as protocol
@@ -245,8 +247,9 @@ class PromptTests(unittest.TestCase):
             self.assertEqual(generated, protocol.render_prompt(identity))
             self.assertEqual(run_case.read_json(workspace / "step_record.schema.json"), protocol.STEP_SCHEMA)
             self.assertEqual(run_case.read_json(workspace / "global_summary.schema.json")["required"], ["outcome"])
-            self.assertEqual((workspace / "io.ps1").read_bytes(), (ROOT / "stepwise/engine/io.ps1").read_bytes())
-            self.assertEqual((workspace / "submission_protocol.md").read_bytes(), prompt_builder.SUBMISSION_PROTOCOL_PATH.read_bytes())
+            helper = prompt_builder.HELPER_NAME
+            self.assertEqual((workspace / helper).read_bytes(), (ROOT / "stepwise/engine" / helper).read_bytes())
+            self.assertEqual((workspace / "submission_protocol.md").read_bytes(), prompt_builder.RUNTIME.submission_protocol_bytes())
 
     def test_startup_routes_to_skill_and_staged_protocol(self):
         prompt = protocol.render_prompt({"id": "synthetic"})
@@ -254,6 +257,37 @@ class PromptTests(unittest.TestCase):
         self.assertIn("submission_protocol.md", prompt)
         self.assertNotIn("MAIN causal failure", prompt)
         self.assertNotIn("PowerShell", prompt)
+
+
+class PlatformRuntimeTests(unittest.TestCase):
+    def test_windows_keeps_mxc_and_powershell_contract(self):
+        runtime = platform_runtime.WindowsRuntime()
+        options = runtime.sandbox_options("/tmp/work", "/tmp/home", "/tmp/runtime")
+        self.assertEqual(runtime.name, "windows")
+        self.assertEqual(runtime.helper_name, "io.ps1")
+        self.assertEqual(runtime.protocol_path.name, "submission_protocol.md")
+        self.assertEqual(options["windows.sandbox"], "mxc")
+        self.assertEqual(options["permissions.d60-workspace.filesystem"]["/tmp/runtime"], "read")
+        self.assertEqual(runtime.approval_args(), ["--approve-for-me"])
+        self.assertEqual(runtime.approval_options(), {})
+        self.assertEqual(runtime.submission_protocol_bytes(), runtime.protocol_path.read_bytes())
+
+    def test_macos_uses_seatbelt_profile_without_windows_sandbox(self):
+        runtime = platform_runtime.MacOSRuntime()
+        options = runtime.sandbox_options("/tmp/work", "/tmp/home", None, ["/opt/python"])
+        self.assertEqual(runtime.name, "macos")
+        self.assertEqual(runtime.helper_name, "io.py")
+        self.assertEqual(runtime.protocol_path.name, "submission_protocol_posix.md")
+        self.assertNotIn("windows.sandbox", options)
+        self.assertEqual(options["default_permissions"], "d60-workspace")
+        self.assertEqual(options["permissions.d60-workspace.filesystem"][":root"], "deny")
+        self.assertEqual(options["permissions.d60-workspace.filesystem"]["/opt/python"], "read")
+        self.assertEqual(runtime.approval_args(), [])
+        self.assertEqual(runtime.approval_options()["approvals_reviewer"], "auto_review")
+        protocol = runtime.submission_protocol_bytes().decode("utf-8")
+        interpreter = shlex.quote(str(Path(sys.executable).resolve()))
+        self.assertIn(f"{interpreter} io.py", protocol)
+        self.assertNotIn("python3 io.py", protocol)
 
 
 

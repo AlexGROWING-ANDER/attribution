@@ -14,6 +14,7 @@ import time
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT / "engine"))
 from harness.storage import atomic_json
+import platform_runtime
 from run_case import validate_case_id, verify_release, sha256
 
 
@@ -76,6 +77,7 @@ def main() -> int:
         handle.write(str(os.getpid()))
     stopped = threading.Event()
     results = {}
+    runtime = platform_runtime.current_runtime()
 
     def existing_record(case_id: str, preserved: bool = True) -> dict | None:
         directory = output / "runs" / case_id / "attempt_01"
@@ -127,19 +129,12 @@ def main() -> int:
         with (directory.parent / "launcher.log").open("ab") as log:
             process = subprocess.Popen(
                 command, stdout=log, stderr=subprocess.STDOUT,
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                **runtime.popen_kwargs(),
             )
             try:
                 returncode = process.wait(timeout=args.wall + 180)
             except subprocess.TimeoutExpired:
-                if sys.platform == "win32":
-                    subprocess.run(
-                        ["taskkill", "/PID", str(process.pid), "/T", "/F"],
-                        capture_output=True, timeout=30,
-                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-                    )
-                else:
-                    process.kill()
+                runtime.kill_process_tree(process, timeout=30)
                 process.wait(timeout=30)
                 return {"case_id": case_id, "state": "runtime_failed", "error": "Launcher exceeded wall deadline"}
         status_path = directory / "status.json"
