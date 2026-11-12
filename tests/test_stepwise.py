@@ -30,12 +30,37 @@ import stepwise_support_fast as prompt_builder
 from normalization_audit import changes
 
 
+def load_validator():
+    spec = importlib.util.spec_from_file_location(
+        "test_stepwise_validator", ROOT / "stepwise/engine/validate_result.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def save(path: Path, value) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(value), encoding="utf-8")
 
 
 class ReleaseTests(unittest.TestCase):
+    def test_question_answer_goal_is_not_answer_delivery(self):
+        validator = load_validator()
+        for requirement in (
+            "在豆包对话中实际发送问题“2026年世界杯是谁夺冠”，并等待页面显示回答。",
+            "提交问题并查看回答",
+            "发送问题后看到页面返回答案",
+        ):
+            with self.subTest(requirement=requirement):
+                self.assertFalse(validator.is_answer_delivery_goal({"object": "对话", "requirement": requirement}))
+
+    def test_explicit_answer_delivery_remains_guarded(self):
+        validator = load_validator()
+        for requirement in ("将生成的答案发送给用户", "send the final answer to the user"):
+            with self.subTest(requirement=requirement):
+                self.assertTrue(validator.is_answer_delivery_goal({"object": "回复", "requirement": requirement}))
+
     def test_export_integrity(self):
         run_case.verify_release()
 

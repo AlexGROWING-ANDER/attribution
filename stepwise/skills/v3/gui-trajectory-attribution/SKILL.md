@@ -61,7 +61,7 @@ description: "结合 GUI 任务的模块日志、实际动作、执行回执和�
 
 主要原因明确后，回查哪一个真实模块首次输出了该错误要求/判断/动作，以及后续谁只是忠实执行、谁面对新证据又作了独立错误判断。最终责任必须由当前attempt的模块输入输出证明；错误语义本身不指定模块。Manager可以误解状态，Executor或Worker也可以局部误解状态；不能只凭“规划”“理解”“点击”等词分配责任。只读到下游动作而没有上游要求时，保留责任来源缺口。
 
-有独立根因时可记录secondary_causes，不将同一错误的传播重复计为多个责任。已恢复的偏离可解释预算损失，不能写成始终未恢复，也不能声称少走这些步骤就必然完成。主要原因或责任无法确定时分别说明，不用最接近的标签掩盖证据不足。
+有独立根因时可记录secondary_causes，不将同一错误的传播重复计为多个责任。已恢复的局部偏离只有在改变后续状态/决策、破坏验收条件，或实质消耗预算并影响终止时才可进入error_candidates或secondary_causes；仅一次被运行器拒绝、界面无状态变化、下一步立即恢复且后续链条不受影响的动作格式/执行错误属于过程噪声，不参与主次因归因，必要时仅在limitations记录。不能写成始终未恢复，也不能声称少走这些步骤就必然完成。主要原因或责任无法确定时分别说明，不用最接近的标签掩盖证据不足。
 
 分别判断恢复机会、是否尝试和恢复结果。只有新的可观察异常与后续观察/决策机会支持独立恢复缺陷时才填Recovery；不复制Initial充数。已成功恢复如实记录，Recovery留空；没有机会与无法判断分别记录，不混为同一状态。
 
@@ -69,7 +69,7 @@ description: "结合 GUI 任务的模块日志、实际动作、执行回执和�
 
 ### 5. 映射模板并输出
 
-按已查证的问题来源、错误语义及责任模块填写合法标签。这里的分析顺序不改变网站L1/L2/L3的定义，也不新增输出字段或标签。用现有goals、process、error_candidates、primary_selection及证据表达可核查的结论，不输出私有思维过程。Mobile/Agent-S2 的 L1/L2/L3 是层级；UniPath 的 Module/Function/Mechanism/Object 是独立维度，不强行互转。UniPath的App异常使用 `Module=environment_app、Function=E1`，actor=app/environment、stage=environment；兼容既有Module=null，但Environment / App不用于Recovery。预置问题：Mobile-Agent/Agent-S2填 `precondition → 具体类型 → null`；UniPath填 `Module=null、Function=E2、Mechanism=具体类型`，Object按证据选择或留空。动作语法不合法：Mobile-Agent用Executor、Agent-S2用Worker的 `invalid_action_format`；UniPath使用F6及同名Mechanism，责任模块按真实动作来源填写。已有标签覆盖不了的执行问题才报告mapping gap。
+按已查证的问题来源、错误语义及责任模块填写合法标签。这里的分析顺序不改变网站L1/L2/L3的定义，也不新增输出字段或标签。用现有goals、process、error_candidates、primary_selection及证据表达可核查的结论，不输出私有思维过程。Mobile/Agent-S2 的 L1/L2/L3 是层级；UniPath 的 Module/Function/Mechanism/Object 是独立维度，不强行互转。UniPath的App异常使用 `Module=environment_app、Function=E1`，actor=app/environment、stage=environment；兼容既有Module=null，但Environment / App不用于Recovery。预置问题：Mobile-Agent/Agent-S2填 `precondition → 具体类型 → null`；UniPath填 `Module=null、Function=E2、Mechanism=具体类型`，Object按证据选择或留空。动作语法不合法且构成可观察后续影响、责任可定位到生成环节时：Mobile-Agent用Executor、Agent-S2用Worker的 `invalid_action_format`；UniPath使用F6及同名Mechanism，责任模块按真实动作来源填写。瞬时无影响失败按前述过程噪声处理。已有标签覆盖不了的执行问题才报告mapping gap。
 
 按输出约定生成JSON，包含覆盖关键阶段的过程记录、根因、错误步骤、证据及限制。说明语言和展示风格由调用方决定；证据来源保留可追溯路径。
 

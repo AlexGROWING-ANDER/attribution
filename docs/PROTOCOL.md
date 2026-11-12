@@ -15,6 +15,8 @@
 
 全部网站图片逐张送达，每步日志完整读取。来源编号和图库序号本身不证明图片时序。分析方法、主要根因选择及责任模块判断由Skill规定，提交协议负责工具和文件接口。
 
+macOS/Linux的Python helper还提供受控派生视图：只允许从已登记原图做裁剪和固定比例缩放，输出必须位于`derived_views/`且由helper登记。派生视图只辅助局部放大，不替代原图送达，不改变来源编号、图库数量或覆盖统计；桥接层按父图送达字节和几何参数重算校验。Windows仍使用原有PowerShell协议，不开放该helper模式。
+
 ## 提交过程
 
 ```text
@@ -28,7 +30,7 @@
   → status.json：validated／invalid／runtime_failed
 ```
 
-Windows通过PowerShell调用`io.ps1`，macOS/Linux调用`io.py`传递单步小JSON，按数字顺序保存。macOS/Linux启动时会把工作区协议中的`python3`固定为执行器实际使用的Python绝对路径，避免沙箱内`PATH`落到不可用的系统解释器。两条路径执行相同的字段、步序、来源和revision前缀检查。单步记录包含`step`、`verdict`、`summary`、`evidence`；`verdict`是局部判断，不直接等于主要根因。
+Windows通过PowerShell调用`io.ps1`，macOS/Linux调用`io.py`传递单步小JSON，按数字顺序保存。macOS/Linux启动时会把工作区协议中的`python3`固定为执行器实际使用的Python绝对路径，避免沙箱内`PATH`落到不可用的系统解释器。两条路径执行相同的字段、步序、来源和revision前缀检查。POSIX路径额外在`global`保存和`check`通过前执行目标证据预检：`satisfied`或`unsatisfied`目标必须至少引用一个绑定到图片来源的evidence ID，仅有日志或模块自述时拒绝并提示保留`unknown`；Windows helper保持原有行为。单步记录包含`step`、`verdict`、`summary`、`evidence`；`verdict`是局部判断，不直接等于主要根因。
 
 新读取的直接观察可另存为`revision_NNN.json`。原始步骤、verdict和证据前缀保持不变，补充内容追加在后。全局提交和本地完成检查均会检查这项约束，拒绝时返回具体冲突位置。
 
@@ -43,3 +45,5 @@ Windows通过PowerShell调用`io.ps1`，macOS/Linux调用`io.py`传递单步小J
 响应按原字节流转给CLI，审计提取HTTP状态、模型名、usage及完成事件。收到完整`response.completed`后，该次请求携带的材料才记为完整送达。上游HTTP错误保留原状态码；流中途出错则关闭当前连接。请求和流重试由Codex配置控制。
 
 传输审计文件为`bridge_audit.json`，其中`transport=responses_passthrough`、`protocol_conversion=false`。送达回执表明材料已进入请求，不等于模型已经正确理解。
+
+派生视图送达单独写入`derived_view_audit.json`，记录父图`source_id`、父图源/投递哈希、裁剪框、缩放比例、输出尺寸和派生字节哈希。`access_receipt.json`不把派生视图计为图库图片。

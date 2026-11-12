@@ -36,7 +36,7 @@ evidence.phase的七个合法取值仅为before_action、after_action、decision
 
 ## 候选与根因
 
-error_candidates逐项记录id、step、actor、stage、偏离、后果、是否已恢复及证据。stage是分析位置，不是基础模板新标签；区分grounding、command_generation、adaptation等，给命令行/定位责任分析留下明确位置。
+error_candidates逐项记录id、step、actor、stage、偏离、后果、是否已恢复及证据。stage是分析位置，不是基础模板新标签；区分grounding、command_generation、adaptation等，给命令行/定位责任分析留下明确位置。一次被运行器拒绝、界面无状态变化、下一步立即恢复且后续不受影响的瞬时动作错误不进入error_candidates；除非重复发生或造成持续状态、决策、预算或验收影响，否则只在limitations记录。
 
 attribution.initial/recovery为null或归因对象：cause_id引用候选；step、stage和responsible_actor与该候选一致；labels填机器ID，不填中文展示名。
 

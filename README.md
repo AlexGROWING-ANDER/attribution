@@ -90,6 +90,8 @@ macOS/Linux把最后一行换成 `cp config/stepwise.env.example config/stepwise
 
 图片使用**清单登记的q85 WebP缓存，保持原图尺寸**，属于有损编码，不是原始PNG字节或无损压缩。执行器直接读取清单登记的图片缓存。
 
+macOS/Linux另外支持受控派生视图：模型可先全图送达，再用`io.py derive`对已登记原图做确定性裁剪和1—4倍缩放。派生视图只用于局部放大核对，必须用父图`Sxxxx`作为证据来源，不进入图库清单、图片数量或覆盖统计，并单独记录父图哈希、裁剪框、缩放比例和派生字节哈希。其他工具生成的未登记图片会被桥接层拒绝，不会中断案例；原图仍是唯一证据源。Windows的PowerShell提交和MXC运行契约保持不变。
+
 ## 启动
 
 先预检：只核对代码、Skill、材料哈希、CLI和运行时，不请求模型。
@@ -130,6 +132,8 @@ python stepwise/run_batch.py --manifest data/prediction_manifest.json --out runs
 ## 输出与检查
 
 每条案例保留实际 `prompt.txt`、步骤文件、`global_summary.json`、`access_receipt.json`、组装审计、`result.json`、`status.json`及调用日志。
+
+使用派生视图时，`derived_view_audit.json`单独记录送达的派生图及其父图绑定；`access_receipt.json`仍只反映原图与文本来源。
 
 1. Windows的`io.ps1`或macOS/Linux的`io.py`检查基础字段、步序、来源编号及补充证据一致性，记录会话内局部纠错
 2. 程序组装步骤与全局文件，绑定身份、证据编号、过程和覆盖情况
