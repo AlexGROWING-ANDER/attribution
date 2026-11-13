@@ -9,6 +9,10 @@ STEP_SCHEMA={"type":"object","additionalProperties":False,"required":["step","ve
  "source_id":{"type":"string","minLength":1},"phase":{"enum":["before_action","after_action","decision","execution","metadata","final_observation","unknown"]},
  "locator":{"type":"string","minLength":1},"observation":{"type":"string","minLength":1}}}}}}
 
+
+def maps_step(entry, step):
+    return entry.get('step') == step or step in entry.get('steps', [])
+
 def stage_contract(case,protocol,pages,workspace):
     workspace=Path(workspace)
     schema=copy.deepcopy(protocol.wire_schema())
@@ -16,12 +20,15 @@ def stage_contract(case,protocol,pages,workspace):
         schema['properties'].pop(key);schema['required'].remove(key)
     mapping=[]
     for step in case['available_steps']:
-        entries=[e for e in case['inventory'] if e.get('step')==step]
-        page_names=[p['path'] for p in pages if any(f['entry'].get('step')==step for f in p['members'])]
+        entries=[e for e in case['inventory'] if maps_step(e,step)]
+        page_names=[p['path'] for p in pages if any(maps_step(f['entry'],step) for f in p['members'])]
         mapping.append({'step':step,'log_pages':page_names,'source_ids':[e['source_id'] for e in entries]})
-    index={'steps':mapping,'other_log_pages':[p['path'] for p in pages if any(f['entry'].get('step') is None for f in p['members'])],
-      'images':[{'path':e['source'],'source_id':e['source_id'],'registered_step':e.get('step'),'display_index':e.get('display_index')} for e in case['inventory'] if e['kind']=='image'],
-      'image_timing_policy':'Gallery order alone does not establish before/after or a step number. Match visible UI changes to the logs, retain uncertainty, and keep image evidence.step null when its registered step is null.'}
+    mapped_pages={p['path'] for step in case['available_steps'] for p in pages if any(maps_step(f['entry'],step) for f in p['members'])}
+    index={'steps':mapping,'other_log_pages':[p['path'] for p in pages if p['path'] not in mapped_pages],
+      'images':[{'path':e['source'],'source_id':e['source_id'],'registered_step':e.get('step'),
+                 'registered_steps':e.get('steps',[]),'display_index':e.get('display_index')}
+                for e in case['inventory'] if e['kind']=='image'],
+      'image_timing_policy':'Gallery order alone does not establish before/after. A source with registered steps belongs to each listed step; otherwise keep image evidence.step null unless the visible UI establishes timing.'}
     for name,value in [('step_index.json',index),('step_record.schema.json',STEP_SCHEMA),('global_summary.schema.json',schema)]:
         (workspace/name).write_text(json.dumps(value,ensure_ascii=False,indent=2),encoding='utf-8')
     (workspace/'step_judgments').mkdir()
@@ -72,15 +79,17 @@ def assemble(workspace,case,receipt):
             if source is None:raise ValueError('Unknown evidence source_id')
             if source['source'] not in delivered:raise ValueError('Undelivered evidence source')
             identifier=f'E{step:02d}_{j}';ids.append(identifier)
+            source_step=source.get('step')
+            evidence_step=source_step if source_step is not None else (step if step in source.get('steps',[]) else None)
             evidence.append({'id':identifier,'source_id':source['source_id'],
               'kind':{'image':'screenshot','log':'module_output','metadata':'metadata'}[source['kind']],
-              'step':source.get('step'),'phase':observation['phase'],'locator':observation['locator'],'observation':observation['observation']})
+              'step':evidence_step,'phase':observation['phase'],'locator':observation['locator'],'observation':observation['observation']})
         process.append({'start_step':step,'end_step':step,'summary':value['summary'],'evidence_ids':ids});records.append(value)
     projection=json.loads((workspace/'global_summary.json').read_text(encoding='utf-8-sig'))
     forbidden={'evidence','coverage','process'}&projection.keys()
     if forbidden:raise ValueError('Model repeated caller-owned sections: '+str(forbidden))
     missing=[e['source'] for e in case['inventory'] if e['source'] not in delivered]
-    log_steps=[step for step in case['available_steps'] if any(e['kind']=='log' and e.get('step')==step for e in case['inventory']) and all(e['source'] in delivered for e in case['inventory'] if e['kind']=='log' and e.get('step')==step)]
+    log_steps=[step for step in case['available_steps'] if any(e['kind']=='log' and maps_step(e,step) for e in case['inventory']) and all(e['source'] in delivered for e in case['inventory'] if e['kind']=='log' and maps_step(e,step))]
     projection.update(evidence=evidence,process=process,coverage={
        'log_steps_read':log_steps,'screenshots_viewed':[e['source_id'] for e in case['inventory'] if e['kind']=='image' and e['source'] in delivered],
        'missing':missing,'truncations':[],'unresolved':[],

@@ -301,6 +301,19 @@
       },
       "minItems": 0
     },
+    "synthesis": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "summary": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "summary"
+      ]
+    },
     "attribution": {
       "type": "object",
       "additionalProperties": false,
@@ -818,6 +831,7 @@
     "preconditions",
     "goals",
     "error_candidates",
+    "synthesis",
     "attribution",
     "recovery_opportunity",
     "template_gaps",

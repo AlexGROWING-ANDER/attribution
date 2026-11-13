@@ -6,6 +6,7 @@ import hashlib
 import importlib.util
 import json
 from pathlib import Path
+import shlex
 import shutil
 import subprocess
 import sys
@@ -21,11 +22,22 @@ import run_case
 import run_batch
 
 ENGINE = run_case.load_engine()
+import platform_runtime
 from jsonschema import Draft202012Validator
 from harness.protocol import digest
+from PIL import Image
 import stepwise_support_v2 as protocol
 import stepwise_support_fast as prompt_builder
 from normalization_audit import changes
+
+
+def load_validator():
+    spec = importlib.util.spec_from_file_location(
+        "test_stepwise_validator", ROOT / "stepwise/engine/validate_result.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def save(path: Path, value) -> None:
@@ -33,7 +45,32 @@ def save(path: Path, value) -> None:
     path.write_text(json.dumps(value), encoding="utf-8")
 
 
+def load_uipath_builder():
+    spec = importlib.util.spec_from_file_location(
+        "test_uipath_builder", ROOT / "data/build_uipath_manifest.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 class ReleaseTests(unittest.TestCase):
+    def test_question_answer_goal_is_not_answer_delivery(self):
+        validator = load_validator()
+        for requirement in (
+            "在豆包对话中实际发送问题“2026年世界杯是谁夺冠”，并等待页面显示回答。",
+            "提交问题并查看回答",
+            "发送问题后看到页面返回答案",
+        ):
+            with self.subTest(requirement=requirement):
+                self.assertFalse(validator.is_answer_delivery_goal({"object": "对话", "requirement": requirement}))
+
+    def test_explicit_answer_delivery_remains_guarded(self):
+        validator = load_validator()
+        for requirement in ("将生成的答案发送给用户", "send the final answer to the user"):
+            with self.subTest(requirement=requirement):
+                self.assertTrue(validator.is_answer_delivery_goal({"object": "回复", "requirement": requirement}))
+
     def test_export_integrity(self):
         run_case.verify_release()
 
@@ -50,7 +87,22 @@ class ReleaseTests(unittest.TestCase):
             ROOT / "docs/examples/step_record.schema.json",
             ROOT / "docs/examples/global_summary.schema.json",
         ]:
-            Draft202012Validator.check_schema(run_case.read_json(path))
+            with self.subTest(path=path.name):
+                Draft202012Validator.check_schema(run_case.read_json(path))
+
+    def test_synthesis_is_required_in_canonical_and_global_schemas(self):
+        paths = [
+            ROOT / "stepwise/skills/v3/gui-trajectory-attribution/references/output.schema.json",
+            ROOT / "docs/examples/global_summary.schema.json",
+        ]
+        for path in paths:
+            with self.subTest(path=path.name):
+                schema = run_case.read_json(path)
+                self.assertIn("synthesis", schema["required"])
+                self.assertEqual(
+                    schema["properties"]["synthesis"]["required"],
+                    ["summary"],
+                )
 
     def test_selection_rejects_duplicate_ids(self):
         manifest = {"cases": [{"case_id": "a"}, {"case_id": "b"}]}
@@ -86,6 +138,110 @@ class ReleaseTests(unittest.TestCase):
             completed = subprocess.run([sys.executable, str(ROOT / "stepwise/engine/validate_result.py"), str(result)], capture_output=True, text=True, timeout=20)
             self.assertEqual(completed.returncode, 1, completed.stdout + completed.stderr)
             self.assertIn("INVALID", completed.stdout)
+
+
+class UIPathManifestTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        self.package = self.root / "qwen_uipath_teacher_share_20261105_final"
+        self.evidence = self.package / "01_QWEN_TRAJECTORIES/reports/annotation_evidence"
+        self.case_id = "com.synthetic.app__test_1"
+        case_dir = self.evidence / "full_130" / self.case_id
+        tail_dir = self.evidence / "tail_130" / self.case_id
+        case_dir.mkdir(parents=True)
+        tail_dir.mkdir(parents=True)
+        Image.new("RGB", (1000, 2988), "white").save(case_dir / "contact_sheet_01.png")
+        Image.new("RGB", (20, 40), "white").save(tail_dir / "tail_sheet.png")
+        (case_dir / "trajectory_digest.md").write_text(
+            "# Synthetic / test_1\n\n"
+            f"- case_id: `{self.case_id}`\n"
+            "- intent: 打开合成页面并确认结果\n"
+            "- batch_status: `completed`\n"
+            "- screenshot_count: 2\n\n"
+            "## Step 1\n- review: 合成画面一\n- thought: 合成判断一\n"
+            "- action: `{\"action_type\": \"CLICK\", \"x\": 1, \"y\": 2}`\n- reward: `0`; done: `False`\n\n"
+            "## Step 2\n- review: 合成画面二\n- thought: 合成判断二\n"
+            "- action: `{\"action_type\": \"FINISH\"}`\n- reward: `1`; done: `True`\n",
+            encoding="utf-8",
+        )
+        (self.root / "02_ATTRIBUTION_RESULTS").mkdir()
+        (self.root / "02_ATTRIBUTION_RESULTS/uipath_annotations.json").write_text(
+            "not valid json; the builder must never read GT", encoding="utf-8"
+        )
+        self.manifest = self.root / "uipath_manifest.json"
+        self.cache = self.root / "image_cache"
+        self.evidence_out = self.root / "evidence_out"
+        self.builder = load_uipath_builder()
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def build(self, case_ids=None):
+        return self.builder.build(
+            self.package, self.manifest, self.cache, self.evidence_out,
+            "synthetic/uipath", case_ids,
+        )
+
+    def test_builds_digest_first_manifest_without_gt(self):
+        stats = self.build()
+        self.assertEqual(stats["cases"], 1)
+        self.assertEqual(stats["images"], 3)
+        self.assertEqual(stats["steps"], 2)
+        case, manifest, *_ = run_case.load_inputs(ENGINE, self.manifest, self.case_id)
+        self.assertEqual(case["identity"]["framework"], "uipath")
+        self.assertEqual(case["identity"]["template_id"], "uipath")
+        self.assertEqual(case["identity"]["task_id"], "com.synthetic.app/test_1")
+        self.assertEqual(case["identity"]["instruction"], "打开合成页面并确认结果")
+        self.assertEqual(case["identity"]["dataset"], "synthetic/uipath")
+        self.assertEqual(case["available_steps"], [1, 2])
+        self.assertEqual(case["image_count"], 3)
+        self.assertEqual([image["source"] for image in case["images"]], [
+            f"{self.case_id}/step_01.png",
+            f"{self.case_id}/step_02.png",
+            f"{self.case_id}/tail_sheet.png",
+        ])
+        sources = {entry["source"]: entry for entry in case["inventory"]}
+        self.assertEqual(sources[f"{self.case_id}/step_01.png"]["step"], 1)
+        self.assertEqual(sources[f"{self.case_id}/step_01.png"]["derivation"]["box"], [0, 0, 200, 498])
+        self.assertEqual(sources[f"{self.case_id}/trajectory_digest.md"]["steps"], [1, 2])
+        self.assertEqual(sources[f"{self.case_id}/tail_sheet.png"]["phase"], "final_observation")
+        self.assertNotIn("initial_reason", json.dumps(manifest, ensure_ascii=False))
+
+    def test_multistep_sources_are_indexed_for_every_step(self):
+        self.build()
+        case, _, _, _, output_protocol, _ = run_case.load_inputs(
+            ENGINE, self.manifest, self.case_id
+        )
+        workspace = self.root / "workspace"
+        workspace.mkdir()
+        pages = [{"path": "logs/page_001.txt", "members": [{
+            "entry": next(e for e in case["inventory"] if e["kind"] == "log"),
+            "text": "synthetic digest page",
+        }]}]
+        index = protocol.stage_contract(case, output_protocol, pages, workspace)
+        by_source = {e["source"]: e["source_id"] for e in case["inventory"]}
+        step_one_id = by_source[f"{self.case_id}/step_01.png"]
+        step_two_id = by_source[f"{self.case_id}/step_02.png"]
+        digest_id = by_source[f"{self.case_id}/trajectory_digest.md"]
+        tail_id = by_source[f"{self.case_id}/tail_sheet.png"]
+        self.assertEqual(set(index["steps"][0]["source_ids"]), {step_one_id, digest_id})
+        self.assertEqual(index["steps"][0]["log_pages"], ["logs/page_001.txt"])
+        self.assertEqual(set(index["steps"][1]["source_ids"]), {step_two_id, digest_id, tail_id})
+        self.assertEqual(index["other_log_pages"], [])
+
+    def test_screenshot_count_mismatch_is_rejected(self):
+        digest = self.evidence / "full_130" / self.case_id / "trajectory_digest.md"
+        digest.write_text(
+            digest.read_text(encoding="utf-8").replace("screenshot_count: 2", "screenshot_count: 3"),
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(ValueError, "screenshot_count"):
+            self.build()
+
+    def test_requested_case_must_exist(self):
+        with self.assertRaisesRegex(ValueError, "missing"):
+            self.build(["com.synthetic.app__missing"])
 
 
 class InputTests(unittest.TestCase):
@@ -168,7 +324,8 @@ class AssemblyTests(unittest.TestCase):
         self.record = {"step": 1, "verdict": "uncertain", "summary": "Synthetic local observation",
                        "evidence": [self.observation]}
         save(self.workspace / "step_judgments/step_001.json", self.record)
-        save(self.workspace / "global_summary.json", {})
+        self.synthesis = {"summary": "Synthetic cross-step attribution summary"}
+        save(self.workspace / "global_summary.json", {"synthesis": self.synthesis})
         self.receipt = {"events": [
             {"source": entry["source"], "success": True, "content_complete": True, "truncated": False}
             for entry in self.case["inventory"]
@@ -182,6 +339,19 @@ class AssemblyTests(unittest.TestCase):
         self.assertEqual(result["evidence"][0]["id"], "E01_1")
         self.assertTrue(result["coverage"]["scan_complete"])
         self.assertEqual(result["coverage"]["screenshots_viewed"], ["S0002"])
+        self.assertEqual(result["synthesis"], self.synthesis)
+
+    def test_multistep_source_inherits_the_current_judgment_step(self):
+        self.case["available_steps"] = [1, 2]
+        self.case["inventory"][1]["steps"] = [1, 2]
+        self.record = {**self.record, "evidence": [{
+            "source_id": "S0002", "phase": "before_action",
+            "locator": "synthetic frame", "observation": "Synthetic visible frame",
+        }]}
+        save(self.workspace / "step_judgments/step_001.json", self.record)
+        save(self.workspace / "step_judgments/step_002.json", {**self.record, "step": 2})
+        result = protocol.assemble(self.workspace, self.case, self.receipt)
+        self.assertEqual([entry["step"] for entry in result["evidence"]], [1, 2])
 
     def test_missing_step_is_rejected(self):
         (self.workspace / "step_judgments/step_001.json").unlink()
@@ -245,8 +415,9 @@ class PromptTests(unittest.TestCase):
             self.assertEqual(generated, protocol.render_prompt(identity))
             self.assertEqual(run_case.read_json(workspace / "step_record.schema.json"), protocol.STEP_SCHEMA)
             self.assertEqual(run_case.read_json(workspace / "global_summary.schema.json")["required"], ["outcome"])
-            self.assertEqual((workspace / "io.ps1").read_bytes(), (ROOT / "stepwise/engine/io.ps1").read_bytes())
-            self.assertEqual((workspace / "submission_protocol.md").read_bytes(), prompt_builder.SUBMISSION_PROTOCOL_PATH.read_bytes())
+            helper = prompt_builder.HELPER_NAME
+            self.assertEqual((workspace / helper).read_bytes(), (ROOT / "stepwise/engine" / helper).read_bytes())
+            self.assertEqual((workspace / "submission_protocol.md").read_bytes(), prompt_builder.RUNTIME.submission_protocol_bytes())
 
     def test_startup_routes_to_skill_and_staged_protocol(self):
         prompt = protocol.render_prompt({"id": "synthetic"})
@@ -254,6 +425,37 @@ class PromptTests(unittest.TestCase):
         self.assertIn("submission_protocol.md", prompt)
         self.assertNotIn("MAIN causal failure", prompt)
         self.assertNotIn("PowerShell", prompt)
+
+
+class PlatformRuntimeTests(unittest.TestCase):
+    def test_windows_keeps_mxc_and_powershell_contract(self):
+        runtime = platform_runtime.WindowsRuntime()
+        options = runtime.sandbox_options("/tmp/work", "/tmp/home", "/tmp/runtime")
+        self.assertEqual(runtime.name, "windows")
+        self.assertEqual(runtime.helper_name, "io.ps1")
+        self.assertEqual(runtime.protocol_path.name, "submission_protocol.md")
+        self.assertEqual(options["windows.sandbox"], "mxc")
+        self.assertEqual(options["permissions.d60-workspace.filesystem"]["/tmp/runtime"], "read")
+        self.assertEqual(runtime.approval_args(), ["--approve-for-me"])
+        self.assertEqual(runtime.approval_options(), {})
+        self.assertEqual(runtime.submission_protocol_bytes(), runtime.protocol_path.read_bytes())
+
+    def test_macos_uses_seatbelt_profile_without_windows_sandbox(self):
+        runtime = platform_runtime.MacOSRuntime()
+        options = runtime.sandbox_options("/tmp/work", "/tmp/home", None, ["/opt/python"])
+        self.assertEqual(runtime.name, "macos")
+        self.assertEqual(runtime.helper_name, "io.py")
+        self.assertEqual(runtime.protocol_path.name, "submission_protocol_posix.md")
+        self.assertNotIn("windows.sandbox", options)
+        self.assertEqual(options["default_permissions"], "d60-workspace")
+        self.assertEqual(options["permissions.d60-workspace.filesystem"][":root"], "deny")
+        self.assertEqual(options["permissions.d60-workspace.filesystem"]["/opt/python"], "read")
+        self.assertEqual(runtime.approval_args(), [])
+        self.assertEqual(runtime.approval_options()["approvals_reviewer"], "auto_review")
+        protocol = runtime.submission_protocol_bytes().decode("utf-8")
+        interpreter = shlex.quote(str(Path(sys.executable).resolve()))
+        self.assertIn(f"{interpreter} io.py", protocol)
+        self.assertNotIn("python3 io.py", protocol)
 
 
 

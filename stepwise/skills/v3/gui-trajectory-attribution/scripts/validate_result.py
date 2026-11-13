@@ -76,8 +76,24 @@ def locator_conflict(source, locator):
 
 def is_answer_delivery_goal(goal):
     text = goal['object'] + ' ' + goal['requirement']
-    return (bool(re.search(r'answer|response|reply|答复|答案|回答', text, re.I)) and
-            bool(re.search(r'deliver|send|submit|return|交付|送达|发送|返回|提交', text, re.I)))
+    answer_term = bool(re.search(r'answer|response|reply|答复|答案|回答', text, re.I))
+    delivery_term = bool(re.search(r'deliver|send|submit|return|交付|送达|发送|返回|提交', text, re.I))
+    if not (answer_term and delivery_term):
+        return False
+    # Sending a QUESTION to an app and receiving its ANSWER is not delivery of
+    # an agent-generated answer to a recipient. Keep the original temporal
+    # evidence requirement for actual answer delivery, including mixed tasks.
+    question_sent = bool(re.search(r'(?:发送|提交|send|submit)[^。；;\n]{0,32}(?:问题|提问|question|query)', text, re.I))
+    answer_received = bool(re.search(
+        r'(?:得到|收到|获得|查看|看到|显示|出现|返回|等待|receive|get|obtain|view|see|show|display|present)'
+        r'[^。；;\n]{0,24}(?:答案|答复|回答|answer|response|reply)', text, re.I))
+    explicit_delivery = bool(re.search(
+        r'(?:发送|提交|交付|给出|输出)\s*(?:(?:最终|生成的|完整|该|本次)\s*)*(?:答案|答复|回答|回复)'
+        r'|(?:答案|答复|回答|回复)[^。；;，,\n]{0,6}(?:发送|提交|交付|返回)(?:给|到|至)?(?:用户|对方|提问者)'
+        r'|\b(?:send|submit|deliver|return|provide)\s+(?:(?:the|a|an|your|final|generated|complete)\s+)*(?:answer|response|reply)\b', text, re.I))
+    if question_sent and answer_received and not explicit_delivery:
+        return False
+    return True
 
 
 def has_delivery_observation(goal, evidence):

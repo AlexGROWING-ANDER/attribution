@@ -1,6 +1,6 @@
 # GUI轨迹归因：Codex CLI逐Step输出
 
-使用Codex CLI原生加载归因Skill，完整读取GUI任务的日志和网站图库，按Step保存局部判断，再提交全局归因，由程序组装并校验最终结果。
+使用Codex CLI原生加载归因Skill，完整读取GUI任务的日志和网站图库，按Step保存局部判断，再提交全局归因，由程序组装并校验最终结果。支持Windows、macOS和Linux；Windows使用PowerShell提交helper，macOS/Linux使用Python提交helper。
 
 版本：**Codex CLI 0.166.0**。
 
@@ -36,12 +36,15 @@ stepwise/
   run_batch.py                 8—16路有界批跑，也支持1—7路
   prompts/stepwise_en.txt       统一启动Prompt模板
   protocols/submission_protocol.md  本轮工具、分步提交与完成约定
+  protocols/submission_protocol_posix.md  macOS/Linux分步提交约定
   engine/
     native_engine.py           原生CLI、材料准备与送达记录
     responses_transport.py     Responses请求与响应流原样转发
     stepwise_support_v2.py     分步结构、全局结构、程序组装
     stepwise_support_fast.py   实际启动Prompt和交互提速安排
-    io.ps1                     步骤提交与基础检查
+    io.ps1                     Windows步骤提交与基础检查
+    io.py                      macOS/Linux步骤提交与基础检查
+    platform_runtime.py        Windows/macOS/Linux沙箱与进程策略
     validate_result.py         这轮实际使用的最终校验器
     normalization_audit.py     规范化和组装过程的字段变化记录
     harness/                   输出协议、证据索引和本地存储
@@ -65,7 +68,7 @@ RELEASE_MANIFEST.json           导出运行文件的SHA256
 
 ## 安装与配置
 
-要求Windows、Python 3.10+、Node、Codex CLI **0.166.0**。入口检查CLI版本。
+要求Python 3.10+、Node、Codex CLI **0.166.0**。入口检查CLI版本。Windows使用MXC沙箱和PowerShell运行时；macOS使用Seatbelt；Linux使用bubblewrap（需要预先安装）。
 
 ```powershell
 npm install -g @openai/codex@0.166.0
@@ -73,7 +76,9 @@ python -m pip install -r requirements.txt
 Copy-Item config/stepwise.env.example config/stepwise.env
 ```
 
-在本地 `config/stepwise.env` 填写公司HTTPS Responses接口地址和密钥，该文件已被Git忽略。可填网关基础地址 `https://<gateway>/v1` 或完整 `/v1/responses`。网关必须支持当前模型的原生Responses流和工具调用。可选设置 `CODEX_BINARY`（JSON参数数组）、`CODEX_RUNTIME_DEP`（Codex PowerShell运行时目录）。未指定时按常规npm安装位置发现。
+macOS/Linux把最后一行换成 `cp config/stepwise.env.example config/stepwise.env`，并把 `python` 换成 `python3`。
+
+在本地 `config/stepwise.env` 填写公司HTTPS Responses接口地址和密钥，该文件已被Git忽略。可填网关基础地址 `https://<gateway>/v1` 或完整 `/v1/responses`。网关必须支持当前模型的原生Responses流和工具调用。可选设置 `CODEX_BINARY`（JSON参数数组）。Windows可设置 `CODEX_RUNTIME_DEP` 指向Codex PowerShell运行时目录；macOS/Linux不需要该运行时。
 
 ## 输入材料
 
@@ -84,6 +89,18 @@ Copy-Item config/stepwise.env.example config/stepwise.env
 材料根目录与缓存支持绝对路径，也支持相对清单文件的路径。换电脑时按新目录调整路径，保留文件哈希及原任务、attempt身份。
 
 图片使用**清单登记的q85 WebP缓存，保持原图尺寸**，属于有损编码，不是原始PNG字节或无损压缩。执行器直接读取清单登记的图片缓存。
+
+UniPath 的打包标注证据可用独立适配器生成清单。适配器只读取 `trajectory_digest.md`、`contact_sheet_01.png` 和可选的 `tail_sheet.png`，不会读取 `02_ATTRIBUTION_RESULTS` 中的人工GT。contact sheet 的固定 5×6 网格会无损切成逐步 cell 图，模型只收到逐步图、digest 和最终观察图，不需要在运行时反复放大整张 contact sheet；切图来源哈希和裁剪框记录在清单中：
+
+```bash
+python3 data/build_uipath_manifest.py \
+  --base /path/to/qwen_uipath_teacher_share_20261105_final \
+  --out data/uipath_qwen_manifest.json
+```
+
+可用 `--cases` 只登记指定 case ID。该适配器与 Mobile-Agent 的 `data/build_prediction_manifest.py` 相互独立。
+
+macOS/Linux另外支持受控派生视图：模型可先全图送达，再用`io.py derive`对已登记原图做确定性裁剪和1—4倍缩放。派生视图只用于局部放大核对，必须用父图`Sxxxx`作为证据来源，不进入图库清单、图片数量或覆盖统计，并单独记录父图哈希、裁剪框、缩放比例和派生字节哈希。其他工具生成的未登记图片会被桥接层拒绝，不会中断案例；原图仍是唯一证据源。Windows的PowerShell提交和MXC运行契约保持不变。
 
 ## 启动
 
@@ -97,6 +114,17 @@ python stepwise/run_case.py --manifest data/prediction_manifest.json --case case
 
 ```powershell
 python stepwise/run_case.py --manifest data/prediction_manifest.json --case case_001 --out runs/case001_a1 --env-file config/stepwise.env --wall 3600
+```
+
+macOS/Linux真实运行示例：
+
+```bash
+python3 stepwise/run_case.py \
+  --manifest data/prediction_manifest.json \
+  --case case_001 \
+  --out runs/case001_a1 \
+  --env-file config/stepwise.env \
+  --wall 3600
 ```
 
 并发运行清单中全部案例，也可通过 `--cases case_001 case_002` 指定范围：
@@ -115,7 +143,9 @@ python stepwise/run_batch.py --manifest data/prediction_manifest.json --out runs
 
 每条案例保留实际 `prompt.txt`、步骤文件、`global_summary.json`、`access_receipt.json`、组装审计、`result.json`、`status.json`及调用日志。
 
-1. `io.ps1`检查基础字段、步序、来源编号及补充证据一致性，记录会话内局部纠错
+使用派生视图时，`derived_view_audit.json`单独记录送达的派生图及其父图绑定；`access_receipt.json`仍只反映原图与文本来源。
+
+1. Windows的`io.ps1`或macOS/Linux的`io.py`检查基础字段、步序、来源编号及补充证据一致性，记录会话内局部纠错
 2. 程序组装步骤与全局文件，绑定身份、证据编号、过程和覆盖情况
 3. `stepwise/engine/validate_result.py`执行最终JSON结构、引用、标签和规则一致性检查
 
@@ -129,7 +159,7 @@ python stepwise/engine/validate_result.py runs/case001_a1/result.json --referenc
 
 最终检查前的确定性规范化，包括删除不存在的证据引用、清理定位文字、统一责任模块大小写、补未使用维度的null，以及在成功处置下统一恢复机会状态；输出协议还会剔除未声明字段。这些处理可能改变字段内容。`first_prediction.json`保留原始预测，`normalization_audit.json`和状态中的`normalization_changed`记录实际字段变化。
 
-启动前，执行器将submission_protocol.md复制到单案例工作区，与索引、Schema和io.ps1一同提供。它只规定本轮接口，不另定义根因、责任模块或标签判定规则。
+启动前，执行器将对应平台的submission_protocol复制到单案例工作区，与索引、Schema和提交helper一同提供：Windows使用`submission_protocol.md`和`io.ps1`，macOS/Linux使用`submission_protocol_posix.md`内容并通过`io.py`提交。它只规定本轮接口，不另定义根因、责任模块或标签判定规则。
 
 `validated`表示程序检查通过，归因准确率另与人工GT比较。一次启动内也可能发生局部纠错，不能将它写成零错误通过。
 

@@ -1,5 +1,5 @@
 from __future__ import annotations
-import base64,copy,hashlib,importlib.util,json,os,secrets,shutil,subprocess,sys,threading,time,urllib.error
+import base64,copy,hashlib,importlib.util,json,os,secrets,shlex,shutil,subprocess,sys,threading,time,urllib.error
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
 sys.dont_write_bytecode=True
@@ -7,10 +7,27 @@ HERE=Path(__file__).resolve().parent
 sys.path.insert(0,str(HERE))
 from stepwise_support_fast import build_prompt,assemble,PROMPT_VERSION
 from jsonschema import Draft202012Validator
+from PIL import Image
 from harness.protocol import OutputProtocol,SourceCatalog,parse_wire_json
 from study.materials import EvidenceStore
 from responses_transport import forward_responses,route_request
+import platform_runtime
 MODEL='deepseek-v4.1-flash'
+current_runtime=platform_runtime.current_runtime
+DERIVED_ROOT='derived_views'
+DERIVED_SCHEMA='stepwise-derived-view-v1'
+DERIVED_MIN_SCALE=1.0
+DERIVED_MAX_SCALE=4.0
+DERIVED_MAX_SIDE=8192
+DERIVED_MAX_PIXELS=30_000_000
+DERIVED_FIELDS={
+ 'schema','derived_view_id','source_id','parent_source','parent_source_sha256','parent_delivery_sha256',
+ 'parent_dimensions','box','scale','resampling','output_format','output','output_dimensions','output_sha256',
+}
+
+
+class DerivedViewError(ValueError):
+ pass
 
 def sha(p):return hashlib.sha256(Path(p).read_bytes()).hexdigest()
 _ALOCKS={}
@@ -24,6 +41,175 @@ def _rm(p):
  # 清理临时文件；失败时保留残留文件，继续处理后续步骤。
  try:os.remove(str(p))
  except OSError:pass
+
+
+def derived_output_size(size,box,scale):
+ width=box[2]-box[0];height=box[3]-box[1]
+ output=(max(1,int(width*scale+0.5)),max(1,int(height*scale+0.5)))
+ if output[0]>DERIVED_MAX_SIDE or output[1]>DERIVED_MAX_SIDE:raise DerivedViewError('Derived view exceeds side limit')
+ if output[0]*output[1]>DERIVED_MAX_PIXELS:raise DerivedViewError('Derived view exceeds pixel limit')
+ return output
+
+
+def load_derived_view(workspace,path,sources_by_id):
+ """Load one registered derived view and prove it is a deterministic crop/resize of its parent."""
+ workspace=Path(workspace).resolve();path=Path(path).resolve();root=(workspace/DERIVED_ROOT).resolve()
+ if not path.is_relative_to(root) or path.suffix!='.png':raise DerivedViewError('Derived path must be a .png below derived_views/')
+ metadata_path=path.with_name(path.name+'.json')
+ if not metadata_path.is_file():raise DerivedViewError('Derived view has no registration metadata')
+ resolved_metadata=metadata_path.resolve()
+ if not resolved_metadata.is_relative_to(root):raise DerivedViewError('Derived view metadata is outside the derived view directory')
+ try:metadata=json.loads(resolved_metadata.read_text(encoding='utf-8'))
+ except Exception as exc:raise DerivedViewError('Derived view metadata is not valid JSON') from exc
+ if not isinstance(metadata,dict) or set(metadata)!=DERIVED_FIELDS:raise DerivedViewError('Derived view metadata fields are invalid')
+ if metadata['schema']!=DERIVED_SCHEMA:raise DerivedViewError('Derived view schema is invalid')
+ source_id=metadata['source_id']
+ if not isinstance(source_id,str):raise DerivedViewError('Derived view source ID is invalid')
+ source=sources_by_id.get(source_id)
+ if not source or source.get('kind')!='image':raise DerivedViewError('Derived view parent is not a gallery image')
+ if metadata['parent_source']!=source.get('source'):raise DerivedViewError('Derived view parent source does not match the registry')
+ if metadata['parent_source_sha256']!=source.get('sha256'):raise DerivedViewError('Derived view parent source SHA256 does not match the registry')
+ registered_delivery=source.get('delivery_sha256')
+ if registered_delivery is None:raise DerivedViewError('Derived view parent is not bound to a frozen delivery')
+ parent=(workspace/str(source.get('source',''))).resolve()
+ if not parent.is_relative_to(workspace) or not parent.is_file():raise DerivedViewError('Derived view parent is outside the workspace or missing')
+ parent_delivery_sha256=hashlib.sha256(parent.read_bytes()).hexdigest()
+ if parent_delivery_sha256!=registered_delivery or metadata['parent_delivery_sha256']!=registered_delivery:raise DerivedViewError('Derived view parent delivery bytes changed')
+ relative=path.relative_to(workspace).as_posix()
+ if metadata['derived_view_id']!=relative or metadata['output']!=relative:raise DerivedViewError('Derived view output path does not match its registration')
+ if metadata['resampling'] not in ('none','lanczos') or metadata['output_format']!='png':raise DerivedViewError('Derived view operation is not supported')
+ box=metadata['box']
+ if (not isinstance(box,list) or len(box)!=4 or any(type(value) is not int for value in box)):raise DerivedViewError('Derived view box is invalid')
+ scale=metadata['scale']
+ if type(scale) not in (int,float) or not DERIVED_MIN_SCALE<=scale<=DERIVED_MAX_SCALE:raise DerivedViewError('Derived view scale is invalid')
+ if (scale==1.0)!=(metadata['resampling']=='none'):raise DerivedViewError('Derived view resampling does not match its scale')
+ try:
+  with Image.open(parent) as parent_image:
+   parent_image.load();parent_size=list(parent_image.size);width,height=parent_size;x0,y0,x1,y1=box
+   if not (0<=x0<x1<=width and 0<=y0<y1<=height):raise DerivedViewError('Derived view box is outside the parent image')
+   expected_size=derived_output_size(parent_size,box,scale)
+   expected=parent_image.crop(box)
+   if scale!=1.0:expected=expected.resize(expected_size,Image.Resampling.LANCZOS)
+   expected_size=list(expected_size);expected_mode=expected.mode;expected_bytes=expected.tobytes()
+  with Image.open(path) as actual:
+   actual.load()
+   if list(actual.size)!=expected_size or actual.mode!=expected_mode or actual.tobytes()!=expected_bytes:
+    raise DerivedViewError('Derived view pixels are not the registered crop and scale')
+ except DerivedViewError:raise
+ except Exception as exc:raise DerivedViewError('Could not validate derived view image') from exc
+ if metadata['parent_dimensions']!=parent_size:raise DerivedViewError('Derived view parent dimensions do not match')
+ if metadata['output_dimensions']!=expected_size:raise DerivedViewError('Derived view output dimensions do not match')
+ try:raw=path.read_bytes()
+ except OSError as exc:raise DerivedViewError('Derived view bytes are unreadable') from exc
+ if hashlib.sha256(raw).hexdigest()!=metadata['output_sha256']:raise DerivedViewError('Derived view bytes changed after registration')
+ return metadata,raw
+
+
+def resolve_native_image(path,workspace,image_paths,sources_by_id):
+ resolved=Path(path).resolve()
+ if str(resolved).casefold() in image_paths:return 'original',image_paths[str(resolved).casefold()],None
+ root=(Path(workspace).resolve()/DERIVED_ROOT).resolve()
+ if resolved.is_relative_to(root):
+  try:return 'derived',load_derived_view(workspace,resolved,sources_by_id),None
+  except Exception as exc:return 'rejected',None,type(exc).__name__+': '+str(exc)
+ return 'rejected',None,'Image path is not a registered gallery image or derived view'
+
+
+def image_rejection_message(reason):
+ interpreter=str(Path(sys.executable).resolve())
+ if os.name!='nt':interpreter=shlex.quote(interpreter)
+ return ('Image rejected: only unchanged gallery images and registered derived views may be viewed. '
+         'Deliver every original gallery image unchanged for evidence, or create a supplemental crop with '
+         '`'+interpreter+' io.py derive --source-id <Sxxxx> --box x0,y0,x1,y1 --scale 2 --out derived_views/<name>.png` '
+         'and view the returned output. Do not create images with other tools. '
+         'Validation detail: '+str(reason))
+
+
+def view_image_path(call,workspace):
+ if not isinstance(call,dict):raise ValueError('Native view_image call is malformed')
+ try:args=json.loads(call.get('arguments',''))
+ except (TypeError,ValueError) as exc:raise ValueError('Native view_image arguments are not valid JSON') from exc
+ if not isinstance(args,dict) or not isinstance(args.get('path'),str) or not args['path']:
+  raise ValueError('Native view_image arguments must contain a path')
+ path=Path(args['path'])
+ return path if path.is_absolute() else Path(workspace)/path
+
+
+def view_image_blocks(output):
+ if not isinstance(output,list) or any(not isinstance(block,dict) for block in output):
+  raise ValueError('Native view_image output is not a list of image objects')
+ images=[block for block in output if block.get('type')=='input_image']
+ if any(not isinstance(block.get('image_url'),str) for block in images):
+  raise ValueError('Native view_image image entry has no image_url string')
+ return images
+
+
+def classify_posix_view_image(call,output,workspace,image_paths,sources_by_id):
+ path=None;images=[]
+ try:
+  path=view_image_path(call,workspace);images=view_image_blocks(output)
+  if not images:return 'ignored',None,None,path,images
+  kind,payload,reason=resolve_native_image(path,workspace,image_paths,sources_by_id)
+  if kind in ('original','derived') and len(images)!=1:
+   return 'rejected',None,reason or 'Native view_image returned multiple images',path,images
+  return kind,payload,reason,path,images
+ except Exception as exc:return 'rejected',None,type(exc).__name__+': '+str(exc),path,images
+
+
+def verified_delivery_bytes(entry):
+ raw=Path(entry['delivery_path']).read_bytes()
+ if hashlib.sha256(raw).hexdigest()!=entry['delivery_sha256']:raise ValueError('Original image delivery bytes changed')
+ return raw
+
+
+def restore_and_audit(body,workspace,pages,image_paths,sources_by_id,runtime,rejected_seen):
+ calls={};restores=[];newimgs=[];newpages=[];derived=[];rejected=[]
+ def reject_image(item,call,detail,path=None):
+  item['output']=image_rejection_message(detail)
+  cid=call.get('call_id') if isinstance(call,dict) else None
+  if cid not in rejected_seen:
+   rejected_seen.add(cid)
+   if path is None:relative='<invalid view_image call>'
+   else:
+    try:relative=Path(path).resolve().relative_to(Path(workspace).resolve()).as_posix()
+    except Exception:relative=str(path)
+   rejected.append({'path':relative,'reason':detail,'tool_call_id':cid})
+ for item in body.get('input',[]):
+  if item.get('type')=='function_call':calls[item['call_id']]=item
+  elif item.get('type')=='function_call_output':
+   call=calls.get(item.get('call_id'),{});output=item.get('output');name=call.get('name','')
+   if name=='view_image' and isinstance(output,list):
+    if runtime.is_windows():
+     a=json.loads(call['arguments']);p=Path(a['path']);p=p if p.is_absolute() else workspace/p
+     e=image_paths.get(str(p.resolve()).casefold())
+     imgs=[b for b in output if b.get('type')=='input_image']
+     if imgs:
+      if e is None or len(imgs)!=1:raise ValueError('Native image not in current case gallery')
+      raw=Path(e['delivery_path']).read_bytes();mime='image/webp' if raw[:4]==b'RIFF' else 'image/png'
+      before=imgs[0]['image_url'];imgs[0]['image_url']='data:'+mime+';base64,'+base64.b64encode(raw).decode()
+      restores.append({'source':e['source'],'q85_sha256':e['delivery_sha256'],'native_uri_sha256':hashlib.sha256(before.encode()).hexdigest(),'changed':before!=imgs[0]['image_url']})
+      newimgs.append((e,call['call_id']))
+    else:
+     p=None
+     try:
+      kind,payload,reason,p,imgs=classify_posix_view_image(call,output,workspace,image_paths,sources_by_id)
+      if kind=='original' and len(imgs)==1:
+       e=payload
+       raw=verified_delivery_bytes(e)
+       mime='image/webp' if raw[:4]==b'RIFF' else 'image/png'
+       before=imgs[0]['image_url'];imgs[0]['image_url']='data:'+mime+';base64,'+base64.b64encode(raw).decode()
+       restores.append({'source':e['source'],'q85_sha256':e['delivery_sha256'],'native_uri_sha256':hashlib.sha256(before.encode()).hexdigest(),'changed':before!=imgs[0]['image_url']})
+       newimgs.append((e,call['call_id']))
+      elif kind=='derived' and len(imgs)==1:
+       metadata,raw=payload;before=imgs[0]['image_url'];imgs[0]['image_url']='data:image/png;base64,'+base64.b64encode(raw).decode()
+       derived.append({'derived_view_id':metadata['derived_view_id'],'source_id':metadata['source_id'],'parent_source':metadata['parent_source'],'parent_source_sha256':metadata['parent_source_sha256'],'parent_delivery_sha256':metadata['parent_delivery_sha256'],'box':metadata['box'],'scale':metadata['scale'],'output_dimensions':metadata['output_dimensions'],'output_sha256':metadata['output_sha256'],'native_uri_sha256':hashlib.sha256(before.encode()).hexdigest(),'changed':before!=imgs[0]['image_url'],'tool_call_id':call['call_id']})
+      elif kind!='ignored':reject_image(item,call,reason or 'Native view_image returned no usable image',p)
+     except Exception as exc:reject_image(item,call,type(exc).__name__+': '+str(exc),p)
+   elif isinstance(output,str):
+    normalized=output.replace('\r\n','\n')
+    for page in pages:
+     if page_complete(page['text'],normalized):newpages.append((page,call.get('call_id')))
+ return restores,newimgs,newpages,derived,rejected
 
 
 def atomic(p,d):
@@ -69,7 +255,8 @@ import re as _re
 # 沙箱初始化与连接错误的分类特征；实际模型调用以调用日志为准。
 INFRA_PAT = _re.compile(r'failed to create session|native mxc is unavailable|failed to prepare fs sandbox|'
                         r'error creating thread|code -32603|failed to prepare MXC sandbox|'
-                        r'502 bad gateway|tunnel connection failed|bad gateway|connection reset by peer', _re.I)
+                        r'502 bad gateway|tunnel connection failed|bad gateway|connection reset by peer|'
+                        r'sandbox-exec|sandbox_apply|seatbelt', _re.I)
 def normalize_refs(prediction):
  """删掉引用了不存在 evidence id 的位置；success 时恢复机会置 not_applicable。"""
  evs=prediction.get('evidence') or []
@@ -186,6 +373,7 @@ def finish(out,case,skill,protocol,raw,receipt,meta):
 
 def run_native(case,skill,sm,protocol,store,out,wall=850,*,command,endpoint,key):
  out.mkdir(parents=True,exist_ok=False)
+ runtime=current_runtime()
  w=out/'workspace';w.mkdir(exist_ok=True);home=out/'home';home.mkdir(exist_ok=True)
  _sk=w/'.agents/skills/gui-trajectory-attribution'
  shutil.copytree(skill,_sk)
@@ -195,7 +383,7 @@ def run_native(case,skill,sm,protocol,store,out,wall=850,*,command,endpoint,key)
  (w/'identity.json').write_text(json.dumps(case['identity'],ensure_ascii=False,indent=2),encoding='utf8')
  # Deterministic textual serialization identical to the existing evidence reader.
  # Binary attachments outside the human-visible gallery are replaced with scope markers.
- pages=[];events=[];image_paths={};current='';members=[]
+ pages=[];events=[];image_paths={};sources_by_id={};current='';members=[]
  def flush():
   nonlocal current,members
   if not members:return
@@ -208,8 +396,10 @@ def run_native(case,skill,sm,protocol,store,out,wall=850,*,command,endpoint,key)
    img=next(x for x in case['images'] if x['source_id']==e['source_id']);src=Path(img['delivery_path'])
    if sha(src)!=img['delivery_sha256']:raise ValueError('Delivery cache changed')
    dst=w/e['source'];dst.parent.mkdir(exist_ok=True,parents=True);shutil.copyfile(src,dst)
-   image_paths[str(dst.resolve()).casefold()]={**e,'delivery_sha256':img['delivery_sha256'],'delivery_path':str(dst)}
+   entry={**e,'delivery_sha256':img['delivery_sha256'],'delivery_path':str(dst)}
+   image_paths[str(dst.resolve()).casefold()]=entry;sources_by_id[e['source_id']]=entry
   else:
+   sources_by_id[e['source_id']]=e
    blocks,_=store.read(e['source_id']);t='\n'.join(b['text'] for b in blocks if b['type']=='text')
    # Split very long file text into deterministic ranges; record complete coverage only
    # when every range, not merely a read invocation, reaches the main model.
@@ -223,33 +413,13 @@ def run_native(case,skill,sm,protocol,store,out,wall=850,*,command,endpoint,key)
  (w/'input_index.json').write_text(json.dumps(index,ensure_ascii=False,indent=2),encoding='utf8')
  prompt=build_prompt(case,protocol,pages,w)
  (out/'prompt.txt').write_text(prompt,encoding='utf8')
- token=secrets.token_urlsafe(28);aud=[];lock=threading.Lock();start=time.monotonic();deadline=start+wall;viewed=set();ranges={};page_hits=set()
+ token=secrets.token_urlsafe(28);aud=[];lock=threading.Lock();start=time.monotonic();deadline=start+wall;viewed=set();ranges={};page_hits=set();derived_seen=set();rejected_seen=set();derived_audit=[]
  def clean(s):return s.replace(key,'[REDACTED]').replace(token,'[REDACTED_LOCAL]')
  def public(v):
   if isinstance(v,list):return [public(x) for x in v if not(isinstance(x,dict) and x.get('type')=='reasoning')]
   if isinstance(v,dict):return {k:public(x) for k,x in v.items() if k not in ('reasoning_content','encrypted_content')}
   return v
  def receipt():return store.receipt(events)
- def restore_and_audit(body):
-  calls={};restores=[];newimgs=[];newpages=[]
-  for item in body.get('input',[]):
-   if item.get('type')=='function_call':calls[item['call_id']]=item
-   elif item.get('type')=='function_call_output':
-    call=calls.get(item.get('call_id'),{});output=item.get('output');name=call.get('name','')
-    if name=='view_image' and isinstance(output,list):
-     a=json.loads(call['arguments']);p=Path(a['path']);p=p if p.is_absolute() else w/p
-     e=image_paths.get(str(p.resolve()).casefold());imgs=[b for b in output if b.get('type')=='input_image']
-     if imgs:
-      if e is None or len(imgs)!=1:raise ValueError('Native image not in current case gallery')
-      raw=Path(e['delivery_path']).read_bytes();mime='image/webp' if raw[:4]==b'RIFF' else 'image/png'
-      before=imgs[0]['image_url'];imgs[0]['image_url']='data:'+mime+';base64,'+base64.b64encode(raw).decode()
-      restores.append({'source':e['source'],'q85_sha256':e['delivery_sha256'],'native_uri_sha256':hashlib.sha256(before.encode()).hexdigest(),'changed':before!=imgs[0]['image_url']})
-      newimgs.append((e,call['call_id']))
-    elif isinstance(output,str):
-     normalized=output.replace('\r\n','\n')
-     for page in pages:
-      if page_complete(page['text'],normalized):newpages.append((page,call.get('call_id')))
-  return restores,newimgs,newpages
  class Handler(BaseHTTPRequestHandler):
   def log_message(self,*a):pass
   def do_POST(self):
@@ -263,8 +433,9 @@ def run_native(case,skill,sm,protocol,store,out,wall=850,*,command,endpoint,key)
      item={'call':n,'time':time.time(),'sent_upstream':False};aud.append(item)
     d=out/'calls'/('%03d'%n);d.mkdir(parents=True)
     body=json.loads(self.rfile.read(int(self.headers['Content-Length'])))
-    restorations,newimgs,newpages=restore_and_audit(body)
-    body,route=route_request(body,MODEL);item.update(**route,image_restorations=restorations)
+    restorations,newimgs,newpages,derived_images,rejected_images=restore_and_audit(body,w,pages,image_paths,sources_by_id,runtime,rejected_seen)
+    new_derived=[entry for entry in derived_images if entry['tool_call_id'] not in derived_seen]
+    body,route=route_request(body,MODEL);item.update(**route,image_restorations=restorations,image_rejections=rejected_images)
     # Keep hashes and a bounded public request, not duplicated base64 blobs per round.
     pub=public(body)
     def omit_images(v):
@@ -294,6 +465,11 @@ def run_native(case,skill,sm,protocol,store,out,wall=850,*,command,endpoint,key)
      for e,cid in newimgs:
       if e['source'] not in viewed:
        viewed.add(e['source']);events.append({'source':e['source'],'sha256':e['sha256'],'operation':'deliver_image','success':True,'content_complete':True,'tool_call_id':cid,'delivery_sha256':e['delivery_sha256'],'truncated':False})
+     for entry in new_derived:
+      if entry['tool_call_id'] not in derived_seen:
+       derived_seen.add(entry['tool_call_id']);derived_audit.append(entry)
+     item['derived_view_deliveries']=new_derived
+     if new_derived:atomic(out/'derived_view_audit.json',{'schema':'stepwise-derived-view-audit-v1','deliveries':derived_audit})
      for e in case['inventory']:
       if e['kind']=='image' or any(ev['source']==e['source'] for ev in events):continue
       rs=sorted(set(ranges.get(e['source_id'],[])))
@@ -309,19 +485,28 @@ def run_native(case,skill,sm,protocol,store,out,wall=850,*,command,endpoint,key)
     if item is not None:item['finished_at']=time.time()
     atomic(out/'bridge_audit.json',aud)
  server=ThreadingHTTPServer(('127.0.0.1',0),Handler);server.daemon_threads=True;threading.Thread(target=server.serve_forever,daemon=True).start()
- env={k:v for k,v in os.environ.items() if not k.upper().startswith('CODEX_') and not any(s in k.upper() for s in ('API_KEY','TOKEN','SECRET'))};env.update(CODEX_HOME=str(home),USERPROFILE=str(home),HOME=str(home),D60_LOCAL_KEY=token)
- cmd=command+['exec','--ignore-user-config','--skip-git-repo-check','--approve-for-me','--json','-C',str(w),'-m',MODEL,'-o',str(out/'answer.txt')]
- opts={'windows.sandbox':'mxc','default_permissions':'d60-workspace','permissions.d60-workspace.extends':':workspace','permissions.d60-workspace.filesystem':{':root':'deny',':minimal':'read',str(w):'write',str(home):'write',os.environ['CODEX_RUNTIME_DEP']:'read'},'permissions.d60-workspace.network.enabled':False,'model_provider':'d60_company','model_providers.d60_company.name':'Company DeepSeek; explicit same-model approval surrogate','model_providers.d60_company.base_url':f'http://127.0.0.1:{server.server_port}/v1','model_providers.d60_company.env_key':'D60_LOCAL_KEY','model_providers.d60_company.wire_api':'responses','model_providers.d60_company.requires_openai_auth':False,'model_providers.d60_company.request_max_retries':1,'model_providers.d60_company.stream_max_retries':1,'model_providers.d60_company.stream_idle_timeout_ms':650000,'tool_output_token_limit':50000,'features.enable_request_compression':False,'features.skip_host_skill_discovery':True,'features.plugins':False,'features.remote_plugin':False,'features.multi_agent':False}
+ env={k:v for k,v in os.environ.items() if not k.upper().startswith('CODEX_') and not any(s in k.upper() for s in ('API_KEY','TOKEN','SECRET'))};env.update(CODEX_HOME=str(home),HOME=str(home),D60_LOCAL_KEY=token)
+ if runtime.is_windows():env['USERPROFILE']=str(home)
+ cmd=command+['exec','--ignore-user-config','--skip-git-repo-check']+runtime.approval_args()+['--json','-C',str(w),'-m',MODEL,'-o',str(out/'answer.txt')]
+ read_roots=[Path(sys.executable).resolve().parent,Path(sys.prefix).resolve(),Path(getattr(sys,'base_prefix',sys.prefix)).resolve()] if not runtime.is_windows() else []
+ if not runtime.is_windows():
+  for part in command:
+   path=Path(part).expanduser()
+   if path.is_absolute() and path.exists():
+    path=path.resolve();read_roots.append(path if path.is_dir() else path.parent)
+ opts={'model_provider':'d60_company','model_providers.d60_company.name':'Company DeepSeek; explicit same-model approval surrogate','model_providers.d60_company.base_url':f'http://127.0.0.1:{server.server_port}/v1','model_providers.d60_company.env_key':'D60_LOCAL_KEY','model_providers.d60_company.wire_api':'responses','model_providers.d60_company.requires_openai_auth':False,'model_providers.d60_company.request_max_retries':1,'model_providers.d60_company.stream_max_retries':1,'model_providers.d60_company.stream_idle_timeout_ms':650000,'tool_output_token_limit':50000,'features.enable_request_compression':False,'features.skip_host_skill_discovery':True,'features.plugins':False,'features.remote_plugin':False,'features.multi_agent':False}
+ runtime_dep=os.environ.get('CODEX_RUNTIME_DEP') if runtime.is_windows() else None
+ opts.update(runtime.sandbox_options(w,home,runtime_dep,read_roots));opts.update(runtime.approval_options())
  def toml(v):
   if isinstance(v,dict):return '{'+','.join(json.dumps(k)+'='+toml(x) for k,x in v.items())+'}'
   return json.dumps(v,ensure_ascii=False)
  for k,v in opts.items():cmd+=['-c',k+'='+toml(v)]
- cmd+=['-'];atomic(out/'launch.json',{'argv':cmd,'family':'native_d60','skill_manifest_sha256':sha(skill.parent/'manifest.json'),'wall_seconds':wall,'max_calls':160,'permission_policy':'root deny with workspace and minimal runtime allow','native_instructions':True,'approval_surrogate':MODEL})
- proc=subprocess.Popen(cmd,cwd=w,env=env,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,encoding='utf8',errors='replace',creationflags=subprocess.CREATE_NO_WINDOW)
+ cmd+=['-'];atomic(out/'launch.json',{'argv':cmd,'family':'native_d60','platform':runtime.name,'submission_helper':runtime.helper_name,'skill_manifest_sha256':sha(skill.parent/'manifest.json'),'wall_seconds':wall,'max_calls':160,'permission_policy':'root deny with workspace and minimal runtime allow','native_instructions':True,'approval_surrogate':MODEL})
+ proc=subprocess.Popen(cmd,cwd=w,env=env,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,encoding='utf8',errors='replace',**runtime.popen_kwargs())
  atomic(out/'pid.json',{'pid':proc.pid,'start':time.time()});timed=False
  try:stdout,stderr=proc.communicate(prompt,timeout=max(1,deadline-time.monotonic()))
  except subprocess.TimeoutExpired:
-  timed=True;subprocess.run(['taskkill','/PID',str(proc.pid),'/T','/F'],capture_output=True,creationflags=subprocess.CREATE_NO_WINDOW);stdout,stderr=proc.communicate(timeout=20)
+  timed=True;runtime.kill_process_tree(proc);stdout,stderr=proc.communicate(timeout=20)
  finally:server.shutdown();server.server_close()
  (out/'stdout.jsonl').write_text(clean(stdout),encoding='utf8');(out/'stderr.txt').write_text(clean(stderr),encoding='utf8')
  atomic(out/'access_receipt.json',receipt())
@@ -334,7 +519,7 @@ def run_native(case,skill,sm,protocol,store,out,wall=850,*,command,endpoint,key)
   failure={'case_id':case['case_id'],'state':'infra_failed' if network_interruption else 'invalid','protocol':'stepwise_fast_v2','prompt_version':PROMPT_VERSION,'validator_patch_version':'answer-delivery-direction-v1','validator_sha256':sha(HERE/'validate_result.py'),'error':terminal_error if network_interruption else 'Step assembly: '+str(exc),'assembly_error':str(exc),'returncode':proc.returncode,'timed_out':timed,'seconds':round(time.monotonic()-start,2),'post_validator_model_repair':False}
   atomic(out/'status.json',failure);return failure
  complete=len({e['source'] for e in events})==len(case['inventory'])
- meta={'case_id':case['case_id'],'family':'native_d60','model':MODEL,'version':sm['skill_version'],'returncode':proc.returncode,'timed_out':timed,'coverage_complete':complete,'delivered_sources':len(events),'required_sources':len(case['inventory']),'delivered_images':len(viewed),'required_images':case['image_count'],'completed_pages':len(page_hits),'required_pages':len(pages),'upstream_calls':sum(bool(x.get('sent_upstream')) for x in aud),'bridge_requests':len(aud),'seconds':round(time.monotonic()-start,2),'run_directory':str(out),'approval_surrogate_not_official_model':True,'protocol':'stepwise_fast_v2','prompt_version':PROMPT_VERSION,'validator_patch_version':'answer-delivery-direction-v1','validator_sha256':sha(HERE/'validate_result.py'),'post_validator_model_repair':False}
+ meta={'case_id':case['case_id'],'family':'native_d60','platform':runtime.name,'submission_helper':runtime.helper_name,'model':MODEL,'version':sm['skill_version'],'returncode':proc.returncode,'timed_out':timed,'coverage_complete':complete,'delivered_sources':len(events),'required_sources':len(case['inventory']),'delivered_images':len(viewed),'required_images':case['image_count'],'derived_views_delivered':len(derived_audit),'completed_pages':len(page_hits),'required_pages':len(pages),'upstream_calls':sum(bool(x.get('sent_upstream')) for x in aud),'bridge_requests':len(aud),'seconds':round(time.monotonic()-start,2),'run_directory':str(out),'approval_surrogate_not_official_model':True,'protocol':'stepwise_fast_v2','prompt_version':PROMPT_VERSION,'validator_patch_version':'answer-delivery-direction-v1','validator_sha256':sha(HERE/'validate_result.py'),'post_validator_model_repair':False}
  if (proc.returncode or timed) and not raw:
   _err=(stderr[-2200:] if stderr else 'No final output')
   meta.update(state='infra_failed' if INFRA_PAT.search(_err) else 'runtime_failed',error=_err)

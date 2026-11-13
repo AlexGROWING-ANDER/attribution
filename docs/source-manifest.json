@@ -84,6 +84,30 @@
     {
       "file": "stepwise/engine/native_engine.py",
       "change": "Persist normalization and compile field-change audit without changing the historical normalization rules"
+    },
+    {
+      "file": "stepwise/engine/native_engine.py",
+      "change": "Validate registered macOS/Linux derived views against the frozen parent delivery and deterministic crop/scale pixels; reject unregistered images as recoverable tool output instead of a 502"
+    },
+    {
+      "file": "stepwise/engine/native_engine.py",
+      "change": "Use the active Python interpreter in POSIX derive guidance; reject malformed view_image calls and changed original delivery bytes as recoverable POSIX tool output"
+    },
+    {
+      "file": "stepwise/engine/io.py",
+      "change": "Add POSIX-only controlled crop and fixed-scale derived views with source, delivery, geometry and byte hashes"
+    },
+    {
+      "file": "stepwise/engine/io.py",
+      "change": "POSIX local precheck rejects satisfied/unsatisfied goals without screenshot evidence before saving or passing check; Windows helper behavior is unchanged"
+    },
+    {
+      "file": "stepwise/protocols/submission_protocol_posix.md",
+      "change": "Document supplemental derived views while requiring unchanged original gallery delivery and Sxxxx evidence sources"
+    },
+    {
+      "file": "stepwise/protocols/submission_protocol_posix.md",
+      "change": "Require a registered image source for every known goal status; module_output alone requires unknown"
     }
   ],
   "scope": "Native Responses stepwise execution only",
@@ -112,5 +136,34 @@
     "scope": "Replace local Responses/Chat conversion with native Responses forwarding; keep Skill, prompt, submission contracts and validator rules unchanged",
     "no_chat_fallback": true,
     "response_bytes_rebuilt": false
+  },
+  "platform_adapter": {
+    "scope": "Keep the Windows native snapshot unchanged while adding macOS and Linux host support",
+    "windows": {
+      "sandbox": "windows.sandbox=mxc",
+      "submission_helper": "stepwise/engine/io.ps1",
+      "protocol": "stepwise/protocols/submission_protocol.md",
+      "process_cleanup": "taskkill /T /F"
+    },
+    "macos_linux": {
+      "sandbox": "permission profile without windows.sandbox; Seatbelt on macOS and bubblewrap on Linux",
+      "submission_helper": "stepwise/engine/io.py",
+      "protocol": "stepwise/protocols/submission_protocol_posix.md",
+      "process_cleanup": "POSIX process group terminate/kill"
+    },
+    "files": {
+      "stepwise/engine/platform_runtime.py": "a19974814fbb8f931e4c3d82eec55d0ef0c4c441d708441177a0015580caf5fd",
+      "stepwise/engine/io.py": "2ca373f2aae8dfc76c0620defc2c4e5a457af02cdb7402c10ed157e4521ed3d8",
+      "stepwise/protocols/submission_protocol_posix.md": "fe21121156a7f830387e94ca8f03eb3632496d5a10ed9b9da996ad47bd7e0a7e"
+    },
+    "derived_views": {
+      "scope": "macOS/Linux supplemental crop and fixed-scale views only",
+      "helper_mode": "python io.py derive",
+      "allowed_sources": "registered gallery image source IDs",
+      "allowed_operations": "rectangular crop and 1-4x lanczos scaling",
+      "output_root": "derived_views/",
+      "evidence_source": "the parent Sxxxx source; derived views never enter the gallery or coverage counts",
+      "audit": "derived_view_audit.json"
+    }
   }
 }

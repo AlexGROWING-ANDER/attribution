@@ -9,7 +9,8 @@ config/*.env
 !config/*.env.example
 .pytest_cache/
 .venv/
-data/
+data/*
+!data/build_uipath_manifest.py
 artifacts/
 *.zip
 
