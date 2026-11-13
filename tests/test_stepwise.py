@@ -77,7 +77,22 @@ class ReleaseTests(unittest.TestCase):
             ROOT / "docs/examples/step_record.schema.json",
             ROOT / "docs/examples/global_summary.schema.json",
         ]:
-            Draft202012Validator.check_schema(run_case.read_json(path))
+            with self.subTest(path=path.name):
+                Draft202012Validator.check_schema(run_case.read_json(path))
+
+    def test_synthesis_is_required_in_canonical_and_global_schemas(self):
+        paths = [
+            ROOT / "stepwise/skills/v3/gui-trajectory-attribution/references/output.schema.json",
+            ROOT / "docs/examples/global_summary.schema.json",
+        ]
+        for path in paths:
+            with self.subTest(path=path.name):
+                schema = run_case.read_json(path)
+                self.assertIn("synthesis", schema["required"])
+                self.assertEqual(
+                    schema["properties"]["synthesis"]["required"],
+                    ["summary"],
+                )
 
     def test_selection_rejects_duplicate_ids(self):
         manifest = {"cases": [{"case_id": "a"}, {"case_id": "b"}]}
@@ -195,7 +210,8 @@ class AssemblyTests(unittest.TestCase):
         self.record = {"step": 1, "verdict": "uncertain", "summary": "Synthetic local observation",
                        "evidence": [self.observation]}
         save(self.workspace / "step_judgments/step_001.json", self.record)
-        save(self.workspace / "global_summary.json", {})
+        self.synthesis = {"summary": "Synthetic cross-step attribution summary"}
+        save(self.workspace / "global_summary.json", {"synthesis": self.synthesis})
         self.receipt = {"events": [
             {"source": entry["source"], "success": True, "content_complete": True, "truncated": False}
             for entry in self.case["inventory"]
@@ -209,6 +225,7 @@ class AssemblyTests(unittest.TestCase):
         self.assertEqual(result["evidence"][0]["id"], "E01_1")
         self.assertTrue(result["coverage"]["scan_complete"])
         self.assertEqual(result["coverage"]["screenshots_viewed"], ["S0002"])
+        self.assertEqual(result["synthesis"], self.synthesis)
 
     def test_missing_step_is_rejected(self):
         (self.workspace / "step_judgments/step_001.json").unlink()

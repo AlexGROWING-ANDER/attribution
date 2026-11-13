@@ -18,6 +18,14 @@ contamination、preconditions分别记录，不能互相覆盖。preconditions�
 
 goals覆盖来自原始指令及公共任务口径的每个验收项，包括数量、筛选与额外操作约束；不将模块自行增加的计划当作验收项。判为unsatisfied时在requirement或解释中交代要求来源，不增加额外schema字段。可按相同对象的不同要求拆项。baseline_state与this_attempt_actions区分起点与本次完成。成功时每个验收项都需satisfied及证据；任务开始已满足则另按污染规则处置。
 
+## 汇总结论与标签映射
+
+synthesis是全部逐Step判断完成后的全局综合结论，必须在确定error_candidates主次、填写attribution和模板标签前作为完整自然语言结论写出。它不替代证据字段，也不要求输出私有思维过程。
+
+summary只写一段跨步骤综合判断，通常150—300字：概括哪些验收目标失败或成功、决定性事实、主因节点及责任来源、恢复结论和仍未闭合的证据。不要逐条复述error_candidates、attribution或recovery_opportunity；这些字段已保存详细论证。
+
+synthesis.summary只描述与当前标签基准无关的归因内核，不写L1/L2/L3、Module/Function/Mechanism/Object或模板标签ID。先写summary固定事实链、责任来源和主因，再映射attribution.labels；模板或层级基准变化时只重做标签映射，不因新标签反向改写summary中的证据和因果结论。primary_selection可以引用synthesis，但不得与其矛盾。
+
 ## 覆盖、步骤与证据
 
 coverage.available_steps是按当前分析规范化后的一基决策编号，total_steps是其数量；原始日志从0开始时在证据locator中注明原编号映射，不改源文件。允许缺步，不假设编号连续。
