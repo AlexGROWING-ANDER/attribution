@@ -11,7 +11,7 @@
     "stepwise/engine/normalization_audit.py": "1c584b47002dfef9d74d09b0daca6987f4c69d02944af99331c406a2581ec65c",
     "stepwise/engine/responses_transport.py": "af6eaaec1cc8f9f55996f0eb4913a8162d8661f3a9a3f3be5dffc6b4c0cf43d3",
     "stepwise/engine/stepwise_support_fast.py": "bd66db93fa6ccbe9d4bbdc7e54c0e421ba3ffff11917abe063e7440d78a0be76",
-    "stepwise/engine/stepwise_support_v2.py": "d31f5dd348ceb45261be7ef26c4dd57abe23fa098cab90b22bab07756b132e40",
+    "stepwise/engine/stepwise_support_v2.py": "5cb10b38e71020fd8bf3a473c0beb561f5f580c0461a548ecce2f236fefcdbe5",
     "stepwise/engine/study/__init__.py": "87c17a9d21846c3e28673f55e1bb46a10b1ebba05ce276c9733daead5ae1c874",
     "stepwise/engine/study/image_scope.py": "02dbbb2efcbcc0b1e43e6f9e0cf82ffbd469714fa8c9c1af367af5fcf161469a",
     "stepwise/engine/study/materials.py": "53d6e69070c842c3b68451296c265afdccb53d5f955b0ab92d6cb3f3012e1f67",

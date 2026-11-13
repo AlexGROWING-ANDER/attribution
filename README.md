@@ -90,6 +90,16 @@ macOS/Linux把最后一行换成 `cp config/stepwise.env.example config/stepwise
 
 图片使用**清单登记的q85 WebP缓存，保持原图尺寸**，属于有损编码，不是原始PNG字节或无损压缩。执行器直接读取清单登记的图片缓存。
 
+UniPath 的打包标注证据可用独立适配器生成清单。适配器只读取 `trajectory_digest.md`、`contact_sheet_01.png` 和可选的 `tail_sheet.png`，不会读取 `02_ATTRIBUTION_RESULTS` 中的人工GT。contact sheet 的固定 5×6 网格会无损切成逐步 cell 图，模型只收到逐步图、digest 和最终观察图，不需要在运行时反复放大整张 contact sheet；切图来源哈希和裁剪框记录在清单中：
+
+```bash
+python3 data/build_uipath_manifest.py \
+  --base /path/to/qwen_uipath_teacher_share_20261105_final \
+  --out data/uipath_qwen_manifest.json
+```
+
+可用 `--cases` 只登记指定 case ID。该适配器与 Mobile-Agent 的 `data/build_prediction_manifest.py` 相互独立。
+
 macOS/Linux另外支持受控派生视图：模型可先全图送达，再用`io.py derive`对已登记原图做确定性裁剪和1—4倍缩放。派生视图只用于局部放大核对，必须用父图`Sxxxx`作为证据来源，不进入图库清单、图片数量或覆盖统计，并单独记录父图哈希、裁剪框、缩放比例和派生字节哈希。其他工具生成的未登记图片会被桥接层拒绝，不会中断案例；原图仍是唯一证据源。Windows的PowerShell提交和MXC运行契约保持不变。
 
 ## 启动
