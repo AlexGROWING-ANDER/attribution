@@ -87,7 +87,7 @@ class ReleaseTests(unittest.TestCase):
     def test_frozen_skill_hashes(self):
         base = ROOT / "stepwise/skills/v3"
         manifest = run_case.read_json(base / "manifest.json")
-        self.assertEqual(manifest["skill_version"], "0.15.2")
+        self.assertEqual(manifest["skill_version"], "0.16.0")
         for relative, expected in manifest["files"].items():
             self.assertEqual(run_case.sha256(base / "gui-trajectory-attribution" / relative), expected)
 
@@ -292,6 +292,9 @@ class UIPathManifestTests(unittest.TestCase):
         self.assertEqual(index["steps"][0]["log_pages"], ["logs/page_001.txt"])
         self.assertEqual(set(index["steps"][1]["source_ids"]), {step_two_id, digest_id, tail_id})
         self.assertEqual(index["other_log_pages"], [])
+        self.assertEqual(index["checkpoint_plan"]["path"], "checkpoint_plan.json")
+        self.assertEqual(index["checkpoint_plan"]["schema_path"], "checkpoint_plan.schema.json")
+        Draft202012Validator.check_schema(run_case.read_json(workspace / "checkpoint_plan.schema.json"))
 
     def test_screenshot_count_mismatch_is_rejected(self):
         digest = self.evidence / "full_130" / self.case_id / "trajectory_digest.md"
@@ -732,17 +735,36 @@ class AssemblyTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.workspace = Path(self.temp.name) / "workspace"
         self.workspace.mkdir()
-        self.case = {"available_steps": [1], "inventory": [
+        self.case = {"case_id": "synthetic", "identity": {"id": "synthetic"}, "available_steps": [1], "inventory": [
             {"source_id": "S0001", "source": "step_1/manager.json", "kind": "log", "step": 1},
             {"source_id": "S0002", "source": "images/frame.png", "kind": "image", "step": None},
         ]}
+        self.plan = {
+            "schema": "case-checkpoint-plan-v1", "case_id": "synthetic",
+            "basis": ["instruction", "identity", "task_policy"],
+            "checkpoints": [{
+                "id": "CP1", "type": "goal", "object": "Synthetic object",
+                "requirement": "Synthetic requirement is satisfied", "required": True,
+                "depends_on": [], "acceptance": "Direct screenshot supports the state",
+                "evidence_expectation": ["screenshot"],
+            }],
+        }
+        save(self.workspace / "checkpoint_plan.json", self.plan)
+        checkpoint_sha = hashlib.sha256((self.workspace / "checkpoint_plan.json").read_bytes()).hexdigest()
+        save(self.workspace / "io_events.jsonl", {
+            "at": 1, "mode": "checkpoint", "accepted": True,
+            "detail": "Saved checkpoint plan sha256=" + checkpoint_sha,
+        })
         self.observation = {"source_id": "S0001", "phase": "decision", "locator": "response",
                             "observation": "Synthetic module output"}
         self.record = {"step": 1, "verdict": "uncertain", "summary": "Synthetic local observation",
                        "evidence": [self.observation]}
         save(self.workspace / "step_judgments/step_001.json", self.record)
         self.synthesis = {"summary": "Synthetic cross-step attribution summary"}
-        save(self.workspace / "global_summary.json", {"synthesis": self.synthesis})
+        save(self.workspace / "global_summary.json", {"synthesis": self.synthesis, "goals": [{
+            "id": "CP1", "object": "Synthetic object", "requirement": "Synthetic requirement is satisfied",
+            "first_seen_step": 1, "evidence_ids": ["E01_1"],
+        }]})
         self.receipt = {"events": [
             {"source": entry["source"], "success": True, "content_complete": True, "truncated": False}
             for entry in self.case["inventory"]
@@ -754,9 +776,13 @@ class AssemblyTests(unittest.TestCase):
     def test_assembly_binds_evidence_and_coverage(self):
         result = protocol.assemble(self.workspace, self.case, self.receipt)
         self.assertEqual(result["evidence"][0]["id"], "E01_1")
+        self.assertEqual(result["goals"][0]["steps"], [1])
+        self.assertEqual(result["goals"][0]["step_range"], [1, 1])
         self.assertTrue(result["coverage"]["scan_complete"])
         self.assertEqual(result["coverage"]["screenshots_viewed"], ["S0002"])
         self.assertEqual(result["synthesis"], self.synthesis)
+        audit = run_case.read_json(self.workspace.parent / "stepwise_assembly_audit.json")
+        self.assertEqual(audit["checkpoint_step_ranges"], {"CP1": [1, 1]})
 
     def test_multistep_source_inherits_the_current_judgment_step(self):
         self.case["available_steps"] = [1, 2]
@@ -767,13 +793,46 @@ class AssemblyTests(unittest.TestCase):
         }]}
         save(self.workspace / "step_judgments/step_001.json", self.record)
         save(self.workspace / "step_judgments/step_002.json", {**self.record, "step": 2})
+        save(self.workspace / "global_summary.json", {"synthesis": self.synthesis, "goals": [{
+            "id": "CP1", "object": "Synthetic object", "requirement": "Synthetic requirement is satisfied",
+            "first_seen_step": 1, "evidence_ids": ["E01_1", "E02_1"],
+        }]})
         result = protocol.assemble(self.workspace, self.case, self.receipt)
         self.assertEqual([entry["step"] for entry in result["evidence"]], [1, 2])
+        self.assertEqual(result["goals"][0]["steps"], [1, 2])
+        self.assertEqual(result["goals"][0]["step_range"], [1, 2])
 
     def test_missing_step_is_rejected(self):
         (self.workspace / "step_judgments/step_001.json").unlink()
         with self.assertRaisesRegex(ValueError, "missing"):
             protocol.assemble(self.workspace, self.case, self.receipt)
+
+    def test_missing_checkpoint_plan_is_rejected(self):
+        (self.workspace / "checkpoint_plan.json").unlink()
+        with self.assertRaisesRegex(ValueError, "checkpoint_plan.json is missing"):
+            protocol.assemble(self.workspace, self.case, self.receipt)
+
+    def test_required_checkpoint_must_match_final_goal(self):
+        save(self.workspace / "global_summary.json", {"synthesis": self.synthesis, "goals": [{
+            "id": "CP1", "object": "Synthetic object", "requirement": "Changed requirement",
+        }]})
+        with self.assertRaisesRegex(ValueError, "preserve the checkpoint"):
+            protocol.assemble(self.workspace, self.case, self.receipt)
+
+    def test_checkpoint_plan_cannot_change_after_submission(self):
+        self.plan["checkpoints"][0]["acceptance"] = "Changed after submission"
+        save(self.workspace / "checkpoint_plan.json", self.plan)
+        with self.assertRaisesRegex(ValueError, "changed after"):
+            protocol.assemble(self.workspace, self.case, self.receipt)
+
+    def test_goal_steps_are_derived_from_evidence(self):
+        save(self.workspace / "global_summary.json", {"synthesis": self.synthesis, "goals": [{
+            "id": "CP1", "object": "Synthetic object", "requirement": "Synthetic requirement is satisfied",
+            "first_seen_step": 1, "evidence_ids": ["E01_1"], "steps": [99],
+        }]})
+        result = protocol.assemble(self.workspace, self.case, self.receipt)
+        self.assertEqual(result["goals"][0]["steps"], [1])
+        self.assertEqual(result["goals"][0]["step_range"], [1, 1])
 
     def test_undelivered_citation_is_rejected(self):
         self.receipt["events"] = self.receipt["events"][1:]
@@ -832,6 +891,9 @@ class PromptTests(unittest.TestCase):
             self.assertEqual(generated, protocol.render_prompt(identity))
             self.assertEqual(run_case.read_json(workspace / "step_record.schema.json"), protocol.STEP_SCHEMA)
             self.assertEqual(run_case.read_json(workspace / "global_summary.schema.json")["required"], ["outcome"])
+            self.assertEqual(run_case.read_json(workspace / "checkpoint_plan.schema.json"), protocol.CHECKPOINT_SCHEMA)
+            step_index = run_case.read_json(workspace / "step_index.json")
+            self.assertEqual(step_index["checkpoint_plan"]["submission_mode"], "checkpoint")
             helper = prompt_builder.HELPER_NAME
             self.assertEqual((workspace / helper).read_bytes(), (ROOT / "stepwise/engine" / helper).read_bytes())
             self.assertEqual((workspace / "submission_protocol.md").read_bytes(), prompt_builder.RUNTIME.submission_protocol_bytes())
@@ -840,8 +902,27 @@ class PromptTests(unittest.TestCase):
         prompt = protocol.render_prompt({"id": "synthetic"})
         self.assertIn("$gui-trajectory-attribution", prompt)
         self.assertIn("submission_protocol.md", prompt)
+        self.assertIn("checkpoint_plan.schema.json", prompt)
+        self.assertIn("checkpoint mode", prompt)
         self.assertNotIn("MAIN causal failure", prompt)
         self.assertNotIn("PowerShell", prompt)
+
+    def test_staged_schema_excludes_caller_owned_goal_steps(self):
+        class FakeProtocol:
+            def wire_schema(self):
+                return {"type": "object", "properties": {
+                    "coverage": {}, "evidence": {}, "process": {}, "goals": {"items": {
+                        "type": "object", "properties": {"steps": {}, "step_range": {}, "id": {}},
+                        "required": ["steps", "id"],
+                    }},
+                }, "required": ["coverage", "evidence", "process", "goals"]}
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            protocol.stage_contract({"identity": {"id": "synthetic"}, "available_steps": [1], "inventory": []},
+                                    FakeProtocol(), [], workspace)
+            goal = run_case.read_json(workspace / "global_summary.schema.json")["properties"]["goals"]["items"]
+            self.assertEqual(goal["properties"], {"id": {}})
+            self.assertEqual(goal["required"], ["id"])
 
 
 class PlatformRuntimeTests(unittest.TestCase):
@@ -1029,6 +1110,12 @@ class BatchTests(unittest.TestCase):
 
 
 class PowerShellHelperTests(unittest.TestCase):
+    def test_checkpoint_gate_is_present_in_windows_helper(self):
+        text = (ROOT / "stepwise/engine/io.ps1").read_text(encoding="utf-8-sig")
+        self.assertIn("'checkpoint','step','global','check'", text)
+        self.assertIn("checkpoint_plan.json", text)
+        self.assertIn("Required checkpoint", text)
+
     def test_submit_and_reject_duplicate(self):
         shell = shutil.which("pwsh") or shutil.which("powershell")
         if not shell:
@@ -1036,7 +1123,24 @@ class PowerShellHelperTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             work = Path(temporary)
             shutil.copyfile(ROOT / "stepwise/engine/io.ps1", work / "io.ps1")
-            save(work / "input_index.json", {"available_steps": [1], "sources": [{"source_id": "S0001"}]})
+            save(work / "checkpoint_plan.schema.json", protocol.CHECKPOINT_SCHEMA)
+            save(work / "checkpoint_plan.json", {
+                "schema": "case-checkpoint-plan-v1", "case_id": "synthetic",
+                "basis": ["instruction", "identity", "task_policy"],
+                "checkpoints": [{
+                    "id": "CP1", "type": "goal", "object": "Synthetic object",
+                    "requirement": "Synthetic requirement", "required": True, "depends_on": [],
+                    "acceptance": "Direct screenshot", "evidence_expectation": ["screenshot"],
+                }],
+            })
+            plan_sha = hashlib.sha256((work / "checkpoint_plan.json").read_bytes()).hexdigest()
+            (work / "io_events.jsonl").write_text(json.dumps({
+                "at": 1, "mode": "checkpoint", "accepted": True,
+                "detail": "Saved checkpoint plan sha256=" + plan_sha,
+            }) + "\n", encoding="utf-8")
+            save(work / "input_index.json", {
+                "identity": {"id": "synthetic"}, "available_steps": [1], "sources": [{"source_id": "S0001"}],
+            })
             (work / "step_judgments").mkdir()
             payload = json.dumps({"step": 1, "verdict": "uncertain", "summary": "Synthetic observation",
                 "evidence": [{"source_id": "S0001", "phase": "decision", "locator": "response", "observation": "Synthetic text"}]})

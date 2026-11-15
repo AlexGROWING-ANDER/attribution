@@ -16,7 +16,8 @@ description: "结合 GUI 任务的模块日志、实际动作、执行回执和�
 3. [架构输入契约](references/framework-profiles.md)：说明如何读取运行时绑定的 architecture 产物；本技能不内置任何具体框架的模块名称、调用顺序或职责
 4. [模板注册表](references/template-registry.json)：确定当前模板及其 taxonomy；模板身份、层级和标签定义只以注册表和选中 taxonomy 为准
 5. [模块映射表](references/actor-mapping.json)：核对模块别名、外部 actor、允许阶段及标签阶段约束；不根据模块名称自行推断
-6. [输出约定](references/output-contract.md)。未提供明确提交视图时，再读[规范存储 schema](references/output.schema.json)；调用方已给完整派生提交视图时，按该视图生成最终结果，不重复加载另一份规范格式来重建输出
+6. [Checkpoint 计划](references/checkpoint-plan.md)：在接触轨迹证据前，从指令、身份和任务口径建立任务级验收 checkpoint
+7. [输出约定](references/output-contract.md)。未提供明确提交视图时，再读[规范存储 schema](references/output.schema.json)；调用方已给完整派生提交视图时，按该视图生成最终结果，不重复加载另一份规范格式来重建输出
 
 [任务口径](references/task-policy.json)规定完成、失败、重跑与预置问题的判定。
 
@@ -33,6 +34,12 @@ description: "结合 GUI 任务的模块日志、实际动作、执行回执和�
 若原始指令、当前attempt或框架/模板身份无法确认，先返回已有事实与输入缺口清单，暂不生成正式归因JSON；不猜填框架或拼接不同attempt。身份已确定、仅过程证据不足时，按输出约定使用pending/unknown并保留缺口。未注册框架须先有明确的模板快照和 architecture 输入，不能套用相近架构。
 
 ## 分析流程
+
+### 0. 先提交 checkpoint 计划
+
+只依据原始指令、当前身份和任务口径生成 1–8 个任务级 checkpoint，描述必须达成的状态而不是预期动作，不把日志、截图、回执或已观察到的操作序列当作计划来源。按[checkpoint 计划](references/checkpoint-plan.md)和运行时 `checkpoint_plan.schema.json` 生成后，用提交协议的 checkpoint 模式提交一次并保持不变。后续派生视图、单步记录、全局汇总和检查都必须在该提交成功后进行。
+
+Checkpoint 是验收脚手架，不是证据，不能使用证据 ID，也不能单独证明模型错误或直接决定 L1/L2/L3、责任标签和错误步骤。最终 `goals` 必须逐项承接所有 required checkpoint；可以追加由直接证据发现的额外目标。
 
 ### 1. 核对任务，并提出问题来源假设
 

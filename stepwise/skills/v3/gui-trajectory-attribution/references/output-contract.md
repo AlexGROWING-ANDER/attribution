@@ -18,6 +18,10 @@ contamination、preconditions 分别记录，不能互相覆盖。preconditions 
 
 goals覆盖来自原始指令及公共任务口径的每个验收项，包括数量、筛选与额外操作约束；不将模块自行增加的计划当作验收项。判为unsatisfied时在requirement或解释中交代要求来源，不增加额外schema字段。可按相同对象的不同要求拆项。baseline_state与this_attempt_actions区分起点与本次完成。成功时每个验收项都需satisfied及证据；任务开始已满足则另按污染规则处置。
 
+提交前建立的 checkpoint 计划是 goals 的覆盖基线。每个 required checkpoint 都必须在 goals 中以相同 id、object 和 requirement 出现，再补充实际 status、first_seen_step、baseline_state、this_attempt_actions 与 evidence_ids；证据发现的额外验收项可以追加。计划本身不是证据，不能写入 evidence_ids 或作为标签选择依据；checkpoint 未达成也不直接推出模型责任。
+
+最终 `goals[].steps` 由调用方在组装时计算：汇总该 goal 所引用证据的实际 step，并并入非空 `first_seen_step`。`goals[].step_range` 是同一组步骤的闭区间 `[最小步, 最大步]`，无可绑定步骤时为 `null`；区间内未被引用的中间步骤不等同于已有证据。模型不需要也不应猜测具体步号；这两个字段只表示验收项在本次 attempt 中涉及的步骤范围，不改变证据、错误步骤或责任归因。
+
 ## 汇总结论与标签映射
 
 synthesis是全部逐Step判断完成后的全局综合结论，必须在确定error_candidates主次、填写attribution和模板标签前作为完整自然语言结论写出。它不替代证据字段，也不要求输出私有思维过程。

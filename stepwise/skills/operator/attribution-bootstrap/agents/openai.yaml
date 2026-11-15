@@ -1,0 +1,4 @@
+interface:
+  display_name: "归因批跑引导"
+  short_description: "从 cases 和框架代码仓生成可校验的 manifest/architecture，再启动归因批跑"
+  default_prompt: "使用 $attribution-bootstrap 检查 cases 和框架代码仓，生成并校验归因批跑中间文件后启动批跑"

@@ -6,7 +6,7 @@
       "const": "1.0"
     },
     "skill_version": {
-      "const": "0.15.2"
+      "const": "0.16.0"
     },
     "case": {
       "type": "object",
@@ -252,6 +252,31 @@
               {
                 "type": "integer",
                 "minimum": 1
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "steps": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "minItems": 0,
+            "uniqueItems": true
+          },
+          "step_range": {
+            "anyOf": [
+              {
+                "type": "array",
+                "items": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "minItems": 2,
+                "maxItems": 2
               },
               {
                 "type": "null"

@@ -1,6 +1,6 @@
 # GUI轨迹归因：Codex CLI逐Step输出
 
-使用Codex CLI原生加载归因Skill，完整读取GUI任务的日志和网站图库，按Step保存局部判断，再提交全局归因，由程序组装并校验最终结果。支持Windows、macOS和Linux；Windows使用PowerShell提交helper，macOS/Linux使用Python提交helper。
+使用Codex CLI原生加载归因Skill，先依据任务建立并提交任务级checkpoint计划，再完整读取GUI任务的日志和网站图库、按Step保存局部判断，最后提交全局归因，由程序组装并校验最终结果。checkpoint只固定验收覆盖，不是证据，也不直接决定归因标签。支持Windows、macOS和Linux；Windows使用PowerShell提交helper，macOS/Linux使用Python提交helper。
 
 版本：**Codex CLI 0.166.0**。
 
@@ -22,6 +22,33 @@ Skill负责分析方法，启动Prompt提供任务与资源入口，提交协议
 
 模型工作区只包含当前材料、Skill和提交工具。GT、评分文件和历史预测不进入工作区。送达回执能说明材料进入请求，不能证明模型已经注意并正确理解全部材料。
 
+## 从两个路径开始
+
+操作者或Code Agent拿到一批cases路径和对应框架代码仓路径后，先用bootstrap做布局识别、manifest生成、architecture绑定和可选预检，再启动批跑。完整说明见[Skill使用说明](docs/SKILL_USAGE.md)，操作者侧流程见[attribution-bootstrap](stepwise/skills/operator/attribution-bootstrap/SKILL.md)。
+
+真实运行前先准备`config/stepwise.env`：从`config/stepwise.env.example`复制，填写`GROUND_URL`和`GROUND_API_KEY`；bootstrap未传`--env-file`时默认使用该文件。`inspect`不读取它，`prepare --preflight`和`run`需要它。
+
+```bash
+python3 data/bootstrap_attribution.py inspect --cases /path/to/cases --code /path/to/framework-repo
+
+python3 data/bootstrap_attribution.py prepare \
+  --cases /path/to/cases \
+  --code /path/to/framework-repo \
+  --out runs/bootstrap_YYYYMMDD \
+  --env-file config/stepwise.env \
+  --preflight
+
+python3 data/bootstrap_attribution.py run \
+  --prepared runs/bootstrap_YYYYMMDD \
+  --env-file config/stepwise.env \
+  --jobs 8 \
+  --wall 3600
+```
+
+运行边界：`inspect`和`prepare`可以在受限沙箱中执行，但真实`run`的启动器必须在能够绑定`127.0.0.1`并可出站访问HTTPS的宿主会话中执行。需要放到沙箱外的是`run_batch.py`这个外层启动器，不是所有Codex命令；它启动的每个case仍进入各自独立的沙箱。不要在已经受网络或端口限制的Codex会话里再启动一个Codex来规避限制，子进程会继承外层沙箱；应改用普通终端或在宿主机上显式授权该启动器。预检不请求模型，预检通过不代表真实批跑能在同一沙箱中完成。
+
+当前注册的数据布局在`config/datasets/failure_attribution_benchmark.json`。不支持的结构会停止并报告缺口，不会猜造manifest。人工GT不进入bootstrap、清单或模型工作区。
+
 ## 目录
 
 ```text
@@ -35,7 +62,7 @@ stepwise/
     native_engine.py           原生CLI、材料准备与送达记录
     framework_architecture.py  源码架构编译、绑定解析与沙箱安装
     responses_transport.py     Responses请求与响应流原样转发
-    stepwise_support_v2.py     分步结构、全局结构、程序组装
+    stepwise_support_v2.py     checkpoint/分步/全局结构、程序组装
     stepwise_support_fast.py   实际启动Prompt和交互提速安排
     io.ps1                     Windows步骤提交与基础检查
     io.py                      macOS/Linux步骤提交与基础检查
@@ -53,11 +80,15 @@ stepwise/
       scripts/validate_result.py
 config/frameworks/<framework>/pack.json  框架源码范围与architecture入口
 data/build_framework_architecture.py      编译architecture并写入清单绑定
+data/bootstrap_attribution.py             两路径输入、布局识别与准备/批跑编排
+config/datasets/                         数据集adapter注册表
 docs/
   examples/                    当前Prompt示例及分步／全局Schema
   source-manifest.json          原始文件哈希和导出调整
   legacy/framework-profiles-manual.md  早期人工框架职责归档（不参与运行时）
   PROTOCOL.md                  提交流程与校验约定
+  SKILL_USAGE.md               操作者与模型侧Skill使用说明
+stepwise/skills/operator/attribution-bootstrap/  操作者侧批跑引导Skill
 tests/                         离线检查，不向归因模型加载
 RELEASE_MANIFEST.json           导出运行文件的SHA256
 ```
@@ -188,7 +219,7 @@ python stepwise/engine/validate_result.py runs/case001_a1/result.json --referenc
 
 最终检查前的确定性规范化，包括删除不存在的证据引用、清理定位文字、统一责任模块大小写、补未使用维度的null，以及在成功处置下统一恢复机会状态；输出协议还会剔除未声明字段。这些处理可能改变字段内容。`first_prediction.json`保留原始预测，`normalization_audit.json`和状态中的`normalization_changed`记录实际字段变化。
 
-启动前，执行器将对应平台的submission_protocol复制到单案例工作区，与索引、Schema和提交helper一同提供：Windows使用`submission_protocol.md`和`io.ps1`，macOS/Linux使用`submission_protocol_posix.md`内容并通过`io.py`提交。它只规定本轮接口，不另定义根因、责任模块或标签判定规则。
+启动前，执行器将对应平台的submission_protocol复制到单案例工作区，与索引、Schema和提交helper一同提供：Windows使用`submission_protocol.md`和`io.ps1`，macOS/Linux使用`submission_protocol_posix.md`内容并通过`io.py`提交。`checkpoint_plan.json`必须先经helper提交并通过哈希绑定，之后才允许派生视图、Step、全局汇总和检查；每个required checkpoint必须在最终`goals`中保持相同`id`、`object`和`requirement`。该门禁约束helper提交与派生视图，不声称能阻止直接读取原始文件。它只规定本轮接口，不另定义根因、责任模块或标签判定规则。
 
 `validated`表示程序检查通过，归因准确率另与人工GT比较。一次启动内也可能发生局部纠错，不能将它写成零错误通过。
 

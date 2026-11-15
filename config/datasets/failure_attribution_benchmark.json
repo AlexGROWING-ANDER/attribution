@@ -1,0 +1,32 @@
+{
+  "schema": "attribution-dataset-adapters-v1",
+  "adapters": [
+    {
+      "id": "gpt56_mobile",
+      "framework": "mobile_agent_v3",
+      "group": "mobile_Agent_v3",
+      "package": "gpt5.6",
+      "cases": "cases/converted_121cases",
+      "annotation": "annotations/mobileagent_121/映射表.csv",
+      "builder": "mobile"
+    },
+    {
+      "id": "gpt56_agent_s2",
+      "framework": "agent_s2",
+      "group": "agent_s2",
+      "package": "gpt5.6-sol",
+      "cases": "cases/agents",
+      "annotation": "annotations/Agent-S2_完整标注.json",
+      "builder": "agent_s2"
+    },
+    {
+      "id": "gpt56_uipath",
+      "framework": "uipath",
+      "group": "ui_path",
+      "package": "gpt5.6",
+      "cases": "cases/unipath_130",
+      "annotation": "annotations/UniPath_完整标注.json",
+      "builder": "uipath"
+    }
+  ]
+}

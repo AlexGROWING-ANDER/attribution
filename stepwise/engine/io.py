@@ -6,11 +6,13 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import sys
 import time
 from pathlib import Path
 
 from PIL import Image
+from jsonschema import Draft202012Validator
 
 
 WORK = Path(__file__).resolve().parent
@@ -36,6 +38,7 @@ SOURCE_EVIDENCE_KINDS = {
     "log": "module_output",
     "metadata": "metadata",
 }
+CHECKPOINT_EVENT_PREFIX = "Saved checkpoint plan sha256="
 
 
 class HelperError(ValueError):
@@ -94,6 +97,7 @@ def derived_output_size(size: tuple[int, int], box: tuple[int, int, int, int], s
 
 
 def derive_view(index: dict, source_id: str, box_value: str, scale_value: float, output_value: str) -> dict:
+    require_checkpoint_submission(index)
     sources = index.get("sources")
     if not isinstance(sources, list):
         raise HelperError("sources must be a list")
@@ -319,6 +323,130 @@ def known_sources(index: dict) -> set[str]:
     return {str(source["source_id"]) for source in sources}
 
 
+def validate_checkpoint_plan(index: dict, plan: dict) -> list[str]:
+    schema_path = WORK / "checkpoint_plan.schema.json"
+    if not schema_path.is_file():
+        raise HelperError("checkpoint_plan.schema.json is missing")
+    validator = Draft202012Validator(read_json(schema_path))
+    error = next(validator.iter_errors(plan), None)
+    if error:
+        path = ".".join(str(part) for part in error.absolute_path) or "$"
+        raise HelperError(f"Checkpoint plan schema error at {path}: {error.message}")
+    identity = index.get("identity")
+    case_id = identity.get("id") if isinstance(identity, dict) else None
+    if not isinstance(case_id, str) or not case_id:
+        raise HelperError("input_index.json has no case identity")
+    if plan["case_id"] != case_id:
+        raise HelperError("Checkpoint plan case_id does not match the current case")
+    checkpoints = plan["checkpoints"]
+    identifiers = [item["id"] for item in checkpoints]
+    if len(identifiers) != len(set(identifiers)):
+        raise HelperError("Checkpoint IDs must be unique")
+    required = [item["id"] for item in checkpoints if item["required"]]
+    if not required:
+        raise HelperError("At least one checkpoint must be required")
+    known = set(identifiers)
+    dependencies = {item["id"]: item["depends_on"] for item in checkpoints}
+    for identifier, deps in dependencies.items():
+        for dependency in deps:
+            if dependency not in known:
+                raise HelperError(f"Checkpoint {identifier} depends on unknown {dependency}")
+    visiting: set[str] = set()
+    visited: set[str] = set()
+
+    def visit(identifier: str) -> None:
+        if identifier in visiting:
+            raise HelperError("Checkpoint dependencies must not contain a cycle")
+        if identifier in visited:
+            return
+        visiting.add(identifier)
+        for dependency in dependencies[identifier]:
+            visit(dependency)
+        visiting.remove(identifier)
+        visited.add(identifier)
+
+    for identifier in identifiers:
+        visit(identifier)
+    serialized = json.dumps(plan, ensure_ascii=False)
+    for source_id in known_sources(index):
+        if re.search(rf"(?<![A-Za-z0-9]){re.escape(source_id)}(?![A-Za-z0-9])", serialized):
+            raise HelperError("Checkpoint plan must not cite trajectory evidence IDs")
+    return required
+
+
+def io_events() -> list[dict]:
+    path = WORK / "io_events.jsonl"
+    if not path.is_file():
+        return []
+    events = []
+    for line in path.read_text(encoding="utf-8-sig").splitlines():
+        try:
+            value = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise HelperError("Malformed io_events.jsonl") from exc
+        if not isinstance(value, dict):
+            raise HelperError("Malformed io_events.jsonl")
+        events.append(value)
+    return events
+
+
+def require_checkpoint_submission(index: dict) -> tuple[dict, str]:
+    path = WORK / "checkpoint_plan.json"
+    if not path.is_file():
+        raise HelperError("Submit checkpoint_plan.json before trajectory analysis, step judgments or derived views")
+    plan = read_json(path)
+    validate_checkpoint_plan(index, plan)
+    accepted = [event for event in io_events()
+                if event.get("mode") == "checkpoint" and event.get("accepted") is True]
+    if len(accepted) != 1:
+        raise HelperError("Exactly one accepted checkpoint submission is required")
+    digest = file_sha256(path)
+    if accepted[0].get("detail") != CHECKPOINT_EVENT_PREFIX + digest:
+        raise HelperError("checkpoint_plan.json changed after its accepted submission")
+    return plan, digest
+
+
+def align_checkpoint_goals(plan: dict, goals) -> None:
+    if not isinstance(goals, list):
+        raise HelperError("goals must be a list")
+    goal_items = [item for item in goals if isinstance(item, dict)]
+    for checkpoint in plan["checkpoints"]:
+        matches = [goal for goal in goal_items if goal.get("id") == checkpoint["id"]]
+        if not matches:
+            if checkpoint["required"]:
+                raise HelperError(f"Required checkpoint {checkpoint['id']} is missing from final goals")
+            continue
+        if len(matches) != 1:
+            raise HelperError(f"Checkpoint {checkpoint['id']} must map to exactly one final goal")
+        goal = matches[0]
+        if goal.get("object") != checkpoint["object"] or goal.get("requirement") != checkpoint["requirement"]:
+            raise HelperError(f"Goal {checkpoint['id']} must preserve the checkpoint object and requirement")
+
+
+def submit_checkpoint(index: dict, payload: dict) -> dict:
+    path = WORK / "checkpoint_plan.json"
+    if path.exists():
+        raise HelperError("Checkpoint plan is already saved")
+    accepted = [event for event in io_events()
+                if event.get("accepted") is True and event.get("mode") in ("checkpoint", "step", "global", "check", "derive")]
+    if any(event.get("mode") == "checkpoint" for event in accepted):
+        raise HelperError("Checkpoint plan was already submitted")
+    if accepted:
+        raise HelperError("Checkpoint plan must be submitted before later helper work")
+    if (WORK / "global_summary.json").exists():
+        raise HelperError("Checkpoint plan must be submitted before global summary")
+    if any((WORK / "step_judgments").glob("*.json")):
+        raise HelperError("Checkpoint plan must be submitted before step judgments")
+    derived = WORK / DERIVED_ROOT
+    if derived.is_dir() and any(item.is_file() for item in derived.rglob("*")):
+        raise HelperError("Checkpoint plan must be submitted before derived views")
+    validate_checkpoint_plan(index, payload)
+    save_json(path, payload)
+    digest = file_sha256(path)
+    log_event("checkpoint", True, CHECKPOINT_EVENT_PREFIX + digest)
+    return {"saved": "checkpoint_plan.json", "sha256": digest, "checkpoints": len(payload["checkpoints"])}
+
+
 def checked_evidence_kinds(index: dict, steps: list[int]) -> dict[str, str]:
     sources = index.get("sources")
     if not isinstance(sources, list):
@@ -363,6 +491,7 @@ def check_global_goal_observability(global_summary: dict, evidence_kinds: dict[s
 
 
 def submit_step(index: dict, payload: dict) -> dict:
+    require_checkpoint_submission(index)
     steps = available_steps(index)
     pending = pending_steps(steps)
     if not pending:
@@ -389,6 +518,7 @@ def require_all_steps_complete(index: dict) -> list[int]:
 
 
 def submit_global(index: dict, payload: dict) -> dict:
+    checkpoint_plan, _ = require_checkpoint_submission(index)
     steps = require_all_steps_complete(index)
     evidence_kinds = checked_evidence_kinds(index, steps)
     schema = read_json(WORK / "global_summary.schema.json")
@@ -396,6 +526,7 @@ def submit_global(index: dict, payload: dict) -> dict:
     if not isinstance(required, list):
         raise HelperError("global_summary.schema.json has no required list")
     require_fields(payload, required)
+    align_checkpoint_goals(checkpoint_plan, payload.get("goals"))
     check_global_goal_observability(payload, evidence_kinds)
     save_json(WORK / "global_summary.json", payload)
     log_event("global", True, "Saved global semantic judgment")
@@ -403,6 +534,7 @@ def submit_global(index: dict, payload: dict) -> dict:
 
 
 def check_global(index: dict) -> dict:
+    checkpoint_plan, _ = require_checkpoint_submission(index)
     steps = require_all_steps_complete(index)
     global_summary = read_json(WORK / "global_summary.json")
     evidence_kinds = checked_evidence_kinds(index, steps)
@@ -410,6 +542,7 @@ def check_global(index: dict) -> dict:
     bad = sorted({ref for ref in references(global_summary) if ref not in ids})
     if bad:
         raise HelperError("Unknown evidence refs: " + ",".join(bad))
+    align_checkpoint_goals(checkpoint_plan, global_summary.get("goals"))
     check_global_goal_observability(global_summary, evidence_kinds)
     log_event("check", True, "Local JSON and reference check; final strict validator not invoked")
     return {"ok": True, "steps": len(steps), "evidence_ids": len(ids), "strict_validation": "caller_only"}
@@ -417,7 +550,7 @@ def check_global(index: dict) -> dict:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", choices=("step", "global", "check", "derive"))
+    parser.add_argument("mode", choices=("checkpoint", "step", "global", "check", "derive"))
     parser.add_argument("--json", dest="payload", help="JSON payload; omit to read stdin")
     parser.add_argument("--source-id", help="Derive mode: registered image source ID")
     parser.add_argument("--box", help="Derive mode: crop box x0,y0,x1,y1")
@@ -427,7 +560,9 @@ def main() -> int:
     args = parser.parse_args()
     try:
         index = read_json(WORK / "input_index.json")
-        if args.mode == "step":
+        if args.mode == "checkpoint":
+            result = submit_checkpoint(index, read_payload(args.payload))
+        elif args.mode == "step":
             result = submit_step(index, read_payload(args.payload))
         elif args.mode == "global":
             result = submit_global(index, read_payload(args.payload))

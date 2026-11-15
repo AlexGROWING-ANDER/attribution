@@ -550,7 +550,7 @@ def run_native(case,skill,sm,protocol,store,out,wall=850,*,command,endpoint,key)
        item.setdefault('new_complete_pages',[]).append(page['path'])
      for e,cid in newimgs:
       if e['source'] not in viewed:
-       viewed.add(e['source']);events.append({'source':e['source'],'sha256':e['sha256'],'operation':'deliver_image','success':True,'content_complete':True,'tool_call_id':cid,'delivery_sha256':e['delivery_sha256'],'truncated':False})
+       viewed.add(e['source']);item.setdefault('delivered_gallery_sources',[]).append(e['source_id']);events.append({'source':e['source'],'sha256':e['sha256'],'operation':'deliver_image','success':True,'content_complete':True,'tool_call_id':cid,'delivery_sha256':e['delivery_sha256'],'truncated':False})
      for entry in new_derived:
       if entry['tool_call_id'] not in derived_seen:
        derived_seen.add(entry['tool_call_id']);derived_audit.append(entry)
