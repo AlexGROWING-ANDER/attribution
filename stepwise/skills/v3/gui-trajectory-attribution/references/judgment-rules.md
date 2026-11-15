@@ -59,11 +59,11 @@ Agent自行安排的最终汇总、额外重开验证、记录标题等步骤，
 - capacity_business_limit：容量／业务规则限制，如明确的收藏上限
 
 
-Mobile-Agent和Agent-S2允许Initial精确映射为 `precondition → type → null`；L3留空是约定，不是映射缺口。纯预置根因的responsible_actor用precondition、stage用environment，不能伪造为Planner或Manager失误。error_candidates在此可记录有证据的阻塞候选，并不表示模型犯错。它需关联同类型、同步骤的confirmed preconditions。未知发现步骤或证据不足时不强填精确Initial。
+当当前 hierarchy taxonomy 的 precondition 分支采用空叶子约定时，Initial 可按该 taxonomy 精确映射为 `precondition → type → null`；叶子留空是约定，不是映射缺口。纯预置根因的 responsible_actor 用 precondition、stage 用 environment，不能伪造为模型组件失误。error_candidates 在此可记录有证据的阻塞候选，并不表示模型犯错。它需关联同类型、同步骤的 confirmed preconditions。未知发现步骤或证据不足时不强填精确 Initial。
 
 预置存在不证明Agent无错。看到空结果仍选不满足约束的对象并宣称成功，记录独立模型错误，主要根因依证据选择，preconditions仍保留。所有框架的预置问题只作为Initial阻塞原因或独立preconditions记录，不作为Recovery根因。Recovery必须是模型后续独立的检测、诊断、策略、反馈采纳或执行缺陷；外部条件本身不可用不是恢复错误。
 
-UniPath用Module=null、Function=E2、Mechanism=上述五类之一，Object选择已有的受限对象；无合适对象可null，不因此报映射缺口。stage=environment、responsible_actor=precondition，并关联同类型同步骤的confirmed preconditions。E2仅用于Initial，Recovery沿用R类且必须有独立模型恢复失败证据。服务异常仍用E1，不塞进预置问题。
+当当前 dimensions taxonomy 定义独立的预置 Function/Mechanism 维度时，按该 taxonomy 填写预置条件；Module 按 taxonomy 允许的空值填写，Object 选择已有的受限对象，无合适对象可 null，不因此报映射缺口。stage=environment、responsible_actor=precondition，并关联同类型同步骤的 confirmed preconditions。预置来源仅用于 Initial，Recovery 沿用当前 taxonomy 的恢复类别且必须有独立模型恢复失败证据。服务异常按环境异常维度处理，不塞进预置问题。
 
 运行器通信许可未放行导致的动作阻断，按当前项目运行规则标rerun，与真实适配故障分别处理。登录、身份验证及权限限制按以下边界处置：
 

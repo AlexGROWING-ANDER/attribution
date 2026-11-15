@@ -10,11 +10,11 @@
 
 ## 身份与状态
 
-case：框架ID用mobile_agent_v3、agent_s2、uipath；dataset独立填写实际数据集；task_id、attempt、适配器版本单列，未知版本填unknown。template_id、template_sha256、policy_id和skill_version从模板注册表读取，不能凭空生成。
+case：framework 使用当前清单绑定的机器 ID；dataset 独立填写实际数据集；task_id、attempt、适配器版本单列，未知版本填 unknown。template_id、template_sha256、policy_id 和 skill_version 从模板注册表读取，不能凭空生成。
 
 outcome：completion是任务客观完成情况；decision是处置，不互相代替。区分fail、需清理重跑、语义摘出、预置阻塞及证据待核。basis说明原因，evidence_ids指向原始材料。
 
-contamination、preconditions分别记录，不能互相覆盖。preconditions使用模板预置类型的机器ID；Mobile-Agent和Agent-S2模板包含项目预置分类，不声称为上游官方标签。每项包含Agent如何识别/处理，能区分环境不足与应对错误。污染来源未知写明未知，reset_requirements仅列目标对象需要恢复的状态，不建议清空全部账号数据。
+contamination、preconditions 分别记录，不能互相覆盖。preconditions 使用当前模板预置类型的机器 ID；项目扩展分类不声称为上游官方标签。每项包含 Agent 如何识别/处理，能区分环境不足与应对错误。污染来源未知写明未知，reset_requirements 仅列目标对象需要恢复的状态，不建议清空全部账号数据。
 
 goals覆盖来自原始指令及公共任务口径的每个验收项，包括数量、筛选与额外操作约束；不将模块自行增加的计划当作验收项。判为unsatisfied时在requirement或解释中交代要求来源，不增加额外schema字段。可按相同对象的不同要求拆项。baseline_state与this_attempt_actions区分起点与本次完成。成功时每个验收项都需satisfied及证据；任务开始已满足则另按污染规则处置。
 
@@ -50,13 +50,13 @@ attribution.initial/recovery为null或归因对象：cause_id引用候选；step
 
 hierarchy模板：labels.l1/l2/l3按真实父子路径；module/function/mechanism/object全部null。dimensions模板：l1/l2/l3全部null，独立填写module/function/mechanism/object，Initial用F1-F9/E1/E2，Recovery用R1-R5。
 
-mapping_status=exact需所有所需标签合法；gap时可保留已确定的合法维度，其余null，并在template_gaps说明。UniPath E1使用module=environment_app表示外部App来源，兼容既有module=null；无对应模块的外部设备执行可按原约定留空，不把它硬归planner/grounder。Environment / App仅用于Initial E1，不用于Recovery或E2。无适当标签不发明已有选项、不把最接近的名称伪装为完全匹配。
+mapping_status=exact 需所有所需标签合法；gap 时可保留已确定的合法维度，其余 null，并在 template_gaps 说明。外部 App 或设备来源是否使用空 Module、专用外部 Module 或环境维度，只按当前 taxonomy 与 actor-mapping 的声明处理；不得为了让外部问题落入模型组件而强行映射。无适当标签不发明已有选项、不把最接近的名称伪装为完全匹配。
 
 mapping gap只表示有证据的原因缺少合适模板标签，不表示原因已知。缺少责任来源或因果证据时保留Initial=null、absence_reason与limitations；不能用mapping_status=gap把猜测写成已确认根因。
 
-primary_selection解释为何选这个主要原因；secondary_causes引用其他有证据候选。初始原因确实无法确定时允许null，但absence_reason和limitations须明确缺口。纯预置阻塞在层级模板可精确填写l1=precondition、l2=对应五类之一、l3=null；其cause_id引用阻塞候选，actor=precondition、stage=environment，并链接同类型同步骤的confirmed preconditions。UniPath纯预置可精确填写module=null、function=E2、mechanism=五类之一、object=已有受限对象或null，链接同类型同步骤confirmed preconditions；不因这些约定空值报映射缺口。不要为层级模板的预置L3留空报映射缺口。
+primary_selection 解释为何选这个主要原因；secondary_causes 引用其他有证据候选。初始原因确实无法确定时允许 null，但 absence_reason 和 limitations 须明确缺口。纯预置阻塞按当前 taxonomy 的预置路径精确填写；其 cause_id 引用阻塞候选，actor=precondition、stage=environment，并链接同类型同步骤的 confirmed preconditions。taxonomy 明确允许的叶子或外部模块空值不报映射缺口。
 
-Recovery不能使用层级模板的precondition或UniPath的E2；外部阻塞只记Initial或preconditions。Recovery需独立候选及recovery_independence，说明错误后新的机会和错误判断/措施；不能复用Initial cause_id。同一步内有可区分的后续观察/决策可保留相同步骤，但必须说明阶段差异，不机械要求Step+1。
+Recovery 不能使用当前 taxonomy 声明为仅 Initial 的预置类别；外部阻塞只记 Initial 或 preconditions。Recovery 需独立候选及 recovery_independence，说明错误后新的机会和错误判断/措施；不能复用 Initial cause_id。同一步内有可区分的后续观察/决策可保留相同步骤，但必须说明阶段差异，不机械要求 Step+1。
 
 recovery_opportunity：exists/attempted/outcome单列。yes必须有步骤和证据；no需要流程/终止证据，step可null；unknown保留未知，不写成no。outcome=succeeded时Recovery为null。已识别错误但没尝试和根本没识别，解释不同。
 
@@ -64,7 +64,7 @@ success：Initial和Recovery均null、absence_reason写无需失败归因，Reco
 
 ## 一致性约束
 
-responsible_actor与候选actor一致还不够，还必须与最终模块标签符合actor-mapping.json中的映射。Mobile-Agent的grounding/grounder别名可以映射Executor；Agent-S2的Grounding不能借用Worker标签；UniPath的Planner不能标成Grounder。App与预置问题使用外部来源，UniPath F9或R5的设备适配来源可在明确映射缺口时保持Module=null，不强归模型模块。
+responsible_actor 与候选 actor 一致还不够，还必须与最终模块标签符合 actor-mapping.json 中的映射。同一别名是否可借用另一组件标签，只以当前 actor-mapping 为准；不得因名称相近跨组件借用。App 与预置问题使用外部来源；设备适配来源若当前 taxonomy 明确没有对应模型模块，可保持模块空值并报告映射缺口，不强归模型组件。
 
 completion=success表示已有证据显示目标达成；decision=success表示完整检查后符合整体成功标准。最终success需要全量检查、非空验收目标全部满足、直接完成证据及空失败根因。未完成规定检查时，保留已确认的completion，decision先用pending。
 

@@ -4,13 +4,7 @@
 
 版本：**Codex CLI 0.166.0**。
 
-| 框架 | 归因模板 |
-|---|---|
-| Mobile-Agent-v3 | L1／L2／L3分层标签与模块职责 |
-| Agent-S2 | L1／L2／L3分层标签与框架职责映射 |
-| UniPath | Module／Function／Mechanism／Object |
-
-三框架共用输出协议，分别使用各自的职责映射和标签。运行器接收整理后的材料清单；接入其他框架时需核对当前attempt、日志步骤映射和网站图库范围。
+框架实现差异由外部 `framework pack` 和可校验的 architecture artifact 提供，不写死在归因代码或 Skill 中。architecture 可以由固定 revision 的源码仓静态生成，也可以由人工概览生成；两种模式使用同一套 artifact、安装和校验契约。标签体系、L1／L2／L3 与责任维度仍由评测配置定义，不由源码自动推断。运行器接收整理后的材料清单；接入其他框架时需核对当前 attempt、日志步骤映射和网站图库范围。
 
 Skill负责分析方法，启动Prompt提供任务与资源入口，提交协议定义工具及文件接口。见 [提交流程](docs/PROTOCOL.md)。
 
@@ -39,6 +33,7 @@ stepwise/
   protocols/submission_protocol_posix.md  macOS/Linux分步提交约定
   engine/
     native_engine.py           原生CLI、材料准备与送达记录
+    framework_architecture.py  源码架构编译、绑定解析与沙箱安装
     responses_transport.py     Responses请求与响应流原样转发
     stepwise_support_v2.py     分步结构、全局结构、程序组装
     stepwise_support_fast.py   实际启动Prompt和交互提速安排
@@ -56,9 +51,12 @@ stepwise/
       references/
       agents/
       scripts/validate_result.py
+config/frameworks/<framework>/pack.json  框架源码范围与architecture入口
+data/build_framework_architecture.py      编译architecture并写入清单绑定
 docs/
   examples/                    当前Prompt示例及分步／全局Schema
   source-manifest.json          原始文件哈希和导出调整
+  legacy/framework-profiles-manual.md  早期人工框架职责归档（不参与运行时）
   PROTOCOL.md                  提交流程与校验约定
 tests/                         离线检查，不向归因模型加载
 RELEASE_MANIFEST.json           导出运行文件的SHA256
@@ -101,6 +99,37 @@ python3 data/build_uipath_manifest.py \
 可用 `--cases` 只登记指定 case ID。该适配器与 Mobile-Agent 的 `data/build_prediction_manifest.py` 相互独立。
 
 macOS/Linux另外支持受控派生视图：模型可先全图送达，再用`io.py derive`对已登记原图做确定性裁剪和1—4倍缩放。派生视图只用于局部放大核对，必须用父图`Sxxxx`作为证据来源，不进入图库清单、图片数量或覆盖统计，并单独记录父图哈希、裁剪框、缩放比例和派生字节哈希。其他工具生成的未登记图片会被桥接层拒绝，不会中断案例；原图仍是唯一证据源。Windows的PowerShell提交和MXC运行契约保持不变。
+
+## 框架架构输入
+
+`config/frameworks/<framework>/pack.json` 只描述架构材料的来源和编译范围，例如仓库环境变量、源码根目录、include／exclude，以及默认使用 `generated` 还是 `manual` 模式。它不包含归因标签、责任模块或当前 attempt 的结论。
+
+从源码仓生成 architecture，并把固定绑定写入输入清单：
+
+```bash
+MOBILE_AGENT_V3_REPO=/path/to/Mobile-Agent-v3 \
+python3 data/build_framework_architecture.py \
+  --framework mobile_agent_v3 \
+  --out data/framework_architectures/mobile_agent_v3_v1 \
+  --manifest data/input_manifest.json \
+  --manifest-out data/input_manifest_with_architecture.json
+```
+
+使用人工概览时只需切换模式；产物契约与校验方式不变：
+
+```bash
+python3 data/build_framework_architecture.py \
+  --framework mobile_agent_v3 \
+  --mode manual \
+  --manual-overview /path/to/manual-overview.md \
+  --out data/framework_architectures/mobile_agent_v3_manual_v1 \
+  --manifest data/input_manifest.json \
+  --manifest-out data/input_manifest_with_architecture.json
+```
+
+编译产物目录包含 `artifact.json`、`architecture.json` 和 `architecture.md`。生成内容包含模块摘要与导入关系、类字段、`self.*` 实例状态及方法内读写位置、组件接口、动作常量和调用／继承关系；实例字段的 `value` 只记录 `__init__` 中可解析的默认字面量。编译会记录源码 revision、选中源码树摘要、artifact／JSON／Markdown 哈希；Git 仓会拒绝选中文件的未提交修改，非 Git 仓使用内容固定 revision。清单用顶层 `framework_architecture` 绑定单框架，或用 `framework_architectures` 登记多框架；运行前会重新核验路径、哈希和 case identity，再安装到案例工作区。
+
+architecture 只用于理解框架组件、共享状态、接口、动作契约和调用关系。它不是 attempt 证据，不能替代日志、截图或送达回执，也不能用来直接判定根因。
 
 ## 启动
 

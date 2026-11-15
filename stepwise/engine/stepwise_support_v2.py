@@ -34,7 +34,7 @@ def stage_contract(case,protocol,pages,workspace):
     (workspace/'step_judgments').mkdir()
     return index
 
-PROMPT_VERSION = "stepwise-prompt-r2"
+PROMPT_VERSION = "stepwise-prompt-r4"
 PROMPT_PATH = Path(__file__).resolve().parent.parent / "prompts/stepwise_en.txt"
 
 

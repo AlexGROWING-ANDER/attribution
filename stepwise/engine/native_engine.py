@@ -9,6 +9,8 @@ from stepwise_support_fast import build_prompt,assemble,PROMPT_VERSION
 from jsonschema import Draft202012Validator
 from PIL import Image
 from harness.protocol import OutputProtocol,SourceCatalog,parse_wire_json
+from harness.storage import atomic_json
+from framework_architecture import install_framework_architecture,resolve_framework_architecture,select_framework_binding
 from study.materials import EvidenceStore
 from responses_transport import forward_responses,route_request
 import platform_runtime
@@ -30,6 +32,87 @@ class DerivedViewError(ValueError):
  pass
 
 def sha(p):return hashlib.sha256(Path(p).read_bytes()).hexdigest()
+
+def validate_framework_snapshot_tree(root,source_files):
+ expected={'snapshot.json','framework_index.json','framework_knowledge_contract.md'}|{f'source/{rel}' for rel in source_files}
+ actual=set()
+ for dirpath,dirnames,filenames in os.walk(root,followlinks=False):
+  for name in dirnames+filenames:
+   if (Path(dirpath)/name).is_symlink():raise ValueError('Framework knowledge snapshot contains a symlink')
+  for name in filenames:
+   actual.add((Path(dirpath)/name).relative_to(root).as_posix())
+ if actual!=expected:
+  raise ValueError('Framework knowledge snapshot tree mismatch: missing='+str(sorted(expected-actual))+' extra='+str(sorted(actual-expected)))
+
+def resolve_framework_knowledge(binding,base,identity):
+ """Validate an optional frozen framework source snapshot without making it case evidence."""
+ if binding is None:return None
+ if not isinstance(binding,dict) or binding.get('schema')!='framework-knowledge-binding-v1':
+  raise ValueError('Unknown framework knowledge binding schema')
+ framework=identity.get('framework')
+ if binding.get('framework')!=framework:raise ValueError('Framework knowledge target differs from case identity')
+ if binding.get('mode') not in ('hybrid','repo_only'):raise ValueError('Unsupported framework knowledge mode')
+ root=Path(binding['snapshot_root']).expanduser()
+ root=(root if root.is_absolute() else Path(base)/root).resolve()
+ snapshot_path=root/'snapshot.json';index_path=root/'framework_index.json';contract_path=root/'framework_knowledge_contract.md'
+ if not binding.get('index_sha256') or not binding.get('contract_sha256'):
+  raise ValueError('Framework knowledge binding lacks index/contract hashes')
+ for path in (snapshot_path,index_path,contract_path):
+  if not path.is_file() or not path.resolve().is_relative_to(root):raise ValueError('Framework knowledge snapshot is incomplete')
+ if hashlib.sha256(snapshot_path.read_bytes()).hexdigest()!=binding.get('snapshot_manifest_sha256'):
+  raise ValueError('Framework knowledge snapshot metadata changed')
+ snapshot=json.loads(snapshot_path.read_text(encoding='utf-8'))
+ if snapshot.get('schema')!='framework-knowledge-snapshot-v1' or snapshot.get('framework')!=framework:
+  raise ValueError('Framework knowledge snapshot identity mismatch')
+ if snapshot.get('mode')!=binding.get('mode') or snapshot.get('repo_revision')!=binding.get('repo_revision'):
+  raise ValueError('Framework knowledge binding metadata mismatch')
+ if snapshot.get('tree_sha256')!=binding.get('tree_sha256'):raise ValueError('Framework knowledge tree digest mismatch')
+ files=snapshot.get('files')
+ if not isinstance(files,dict) or not files:raise ValueError('Framework knowledge snapshot has no source files')
+ validate_framework_snapshot_tree(root,files)
+ for rel,digest in files.items():
+  path=(root/'source'/rel).resolve()
+  if not path.is_relative_to(root/'source') or not path.is_file() or sha(path)!=digest:
+   raise ValueError('Framework knowledge source changed: '+rel)
+ index=json.loads(index_path.read_text(encoding='utf-8'))
+ if index.get('schema')!='framework-source-index-v1' or index.get('framework')!=framework:
+  raise ValueError('Framework source index identity mismatch')
+ if sha(index_path)!=binding['index_sha256']:raise ValueError('Framework source index changed')
+ if sha(contract_path)!=binding['contract_sha256']:raise ValueError('Framework knowledge contract changed')
+ if index.get('tree_sha256')!=snapshot.get('tree_sha256') or index.get('repo_revision')!=snapshot.get('repo_revision') or index.get('mode')!=snapshot.get('mode'):
+  raise ValueError('Framework source index digest mismatch')
+ return {'snapshot_root':str(root),'mode':binding['mode'],'repo_revision':binding['repo_revision'],
+         'tree_sha256':binding['tree_sha256'],'source_file_count':len(files),
+         'snapshot_manifest_sha256':binding['snapshot_manifest_sha256'],
+         'index_sha256':binding['index_sha256'],'contract_sha256':binding['contract_sha256']}
+
+def install_framework_knowledge(case,workspace,out):
+ knowledge=case.get('framework_knowledge')
+ if not knowledge:return None
+ source=Path(knowledge['snapshot_root']).resolve();dest=(Path(workspace)/'.framework-knowledge').resolve()
+ if dest.exists():raise ValueError('Framework knowledge destination already exists')
+ shutil.copytree(source,dest)
+ snapshot=json.loads((dest/'snapshot.json').read_text(encoding='utf-8'))
+ if sha(dest/'framework_index.json')!=knowledge['index_sha256'] or sha(dest/'framework_knowledge_contract.md')!=knowledge['contract_sha256']:
+  raise ValueError('Installed framework knowledge index/contract changed')
+ for rel,digest in snapshot['files'].items():
+  path=(dest/'source'/rel).resolve()
+  if not path.is_relative_to(dest/'source') or not path.is_file() or sha(path)!=digest:
+   raise ValueError('Installed framework knowledge source changed: '+rel)
+ binding={**knowledge,'path':'.framework-knowledge/framework_index.json',
+          'contract_path':'.framework-knowledge/framework_knowledge_contract.md',
+          'snapshot_manifest_sha256':sha(dest/'snapshot.json'),
+          'authority':'framework implementation reference only; never current-attempt evidence'}
+ atomic_json(out/'framework_knowledge_binding.json',binding)
+ return binding
+
+
+def install_framework_inputs(case,workspace,out):
+ architecture=install_framework_architecture(case,workspace,out)
+ knowledge=None if architecture else install_framework_knowledge(case,workspace,out)
+ return knowledge,architecture
+
+
 _ALOCKS={}
 _ALOCK_G=threading.Lock()
 
@@ -375,6 +458,7 @@ def run_native(case,skill,sm,protocol,store,out,wall=850,*,command,endpoint,key)
  out.mkdir(parents=True,exist_ok=False)
  runtime=current_runtime()
  w=out/'workspace';w.mkdir(exist_ok=True);home=out/'home';home.mkdir(exist_ok=True)
+ framework_knowledge,framework_architecture=install_framework_inputs(case,w,out)
  _sk=w/'.agents/skills/gui-trajectory-attribution'
  shutil.copytree(skill,_sk)
  for _f in (w/'.agents/skills/gui-trajectory-attribution/references').rglob('*.md'):
@@ -410,6 +494,8 @@ def run_native(case,skill,sm,protocol,store,out,wall=850,*,command,endpoint,key)
     current+=marker;members.append(fragment)
  flush()
  index={'identity':case['identity'],'available_steps':case['available_steps'],'sources':case['inventory'],'log_pages':[{'path':x['path'],'characters':len(x['text'])} for x in pages], 'images':[{'path':e['source'],'source_id':e['source_id']} for e in case['inventory'] if e['kind']=='image'],'normalization':'Original textual fields retained. In-log binary attachments outside the website gallery are replaced deterministically by the shared existing reader. Every named image has the existing q85 bytes at original dimensions.'}
+ if framework_knowledge:index['framework_knowledge']=framework_knowledge
+ if framework_architecture:index['framework_architecture']=framework_architecture
  (w/'input_index.json').write_text(json.dumps(index,ensure_ascii=False,indent=2),encoding='utf8')
  prompt=build_prompt(case,protocol,pages,w)
  (out/'prompt.txt').write_text(prompt,encoding='utf8')

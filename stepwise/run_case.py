@@ -57,6 +57,25 @@ def load_engine():
     return module
 
 
+def resolve_framework_inputs(engine, manifest: dict, base: Path, identity: dict):
+    """Resolve exactly one framework reference source, preferring architecture."""
+    architecture_registry = manifest.get("framework_architecture")
+    if architecture_registry is None:
+        architecture_registry = manifest.get("framework_architectures")
+    architecture_binding = engine.select_framework_binding(
+        architecture_registry, identity["framework"]
+    )
+    architecture = engine.resolve_framework_architecture(
+        architecture_binding, base, identity
+    )
+    knowledge = None
+    if architecture is None:
+        knowledge = engine.resolve_framework_knowledge(
+            manifest.get("framework_knowledge"), base, identity
+        )
+    return knowledge, architecture
+
+
 def load_inputs(engine, manifest_path: Path, case_id: str, expected_manifest_sha256: str | None = None):
     validate_case_id(case_id)
     payload = manifest_path.read_bytes()
@@ -85,6 +104,9 @@ def load_inputs(engine, manifest_path: Path, case_id: str, expected_manifest_sha
     engine.Draft202012Validator(schema["properties"]["case"]).validate(case["identity"])
     if case["identity"]["id"] != case_id:
         raise ValueError("Case identity does not match selected case ID")
+    case["framework_knowledge"], case["framework_architecture"] = resolve_framework_inputs(
+        engine, manifest, manifest_path.parent, case["identity"]
+    )
     registry = read_json(skill / "references" / "template-registry.json")
     template = registry["templates"].get(case["identity"]["template_id"])
     if (not template or template["framework"] != case["identity"]["framework"]
@@ -223,7 +245,9 @@ def main() -> int:
             "platform": platform_runtime.name, "submission_helper": platform_runtime.helper_name,
             "cli_version": "0.166.0", "skill_version": loaded[3]["skill_version"],
             "registered_sources": len(loaded[0]["inventory"]),
-            "registered_images": loaded[0]["image_count"], "paid_calls": 0,
+            "registered_images": loaded[0]["image_count"],
+            "framework_architecture": (loaded[0].get("framework_architecture") or {}).get("mode"),
+            "paid_calls": 0,
         }, ensure_ascii=False))
         return 0
     if platform_runtime.name not in ("windows", "macos", "linux"):

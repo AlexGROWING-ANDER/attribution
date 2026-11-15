@@ -28,6 +28,7 @@ from harness.protocol import digest
 from PIL import Image
 import stepwise_support_v2 as protocol
 import stepwise_support_fast as prompt_builder
+import framework_architecture
 from normalization_audit import changes
 
 
@@ -48,6 +49,15 @@ def save(path: Path, value) -> None:
 def load_uipath_builder():
     spec = importlib.util.spec_from_file_location(
         "test_uipath_builder", ROOT / "data/build_uipath_manifest.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def load_architecture_builder():
+    spec = importlib.util.spec_from_file_location(
+        "test_architecture_builder", ROOT / "data/build_framework_architecture.py"
     )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -80,6 +90,59 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual(manifest["skill_version"], "0.15.2")
         for relative, expected in manifest["files"].items():
             self.assertEqual(run_case.sha256(base / "gui-trajectory-attribution" / relative), expected)
+
+    def test_bundled_validator_matches_engine_logic(self):
+        engine = (ROOT / "stepwise/engine/validate_result.py").read_text(encoding="utf-8")
+        bundled = (ROOT / "stepwise/skills/v3/gui-trajectory-attribution/scripts/validate_result.py").read_text(encoding="utf-8")
+        engine_logic = engine.split("\ndef main():", 1)[0].replace(
+            'REFERENCES = Path(__file__).resolve().parents[1] / "skills/v3/gui-trajectory-attribution/references"',
+            'REFERENCES = Path(__file__).resolve().parents[1] / "references"',
+        )
+        bundled_logic = bundled.split("\ndef main():", 1)[0]
+        self.assertEqual(engine_logic, bundled_logic)
+
+    def test_static_framework_knowledge_configuration_is_not_shipped(self):
+        self.assertFalse((ROOT / "config/framework-knowledge.json").exists())
+        self.assertFalse((ROOT / "data/build_framework_knowledge_snapshot.py").exists())
+
+    def test_framework_profiles_are_architecture_only(self):
+        path = ROOT / "stepwise/skills/v3/gui-trajectory-attribution/references/framework-profiles.md"
+        text = path.read_text(encoding="utf-8")
+        for duplicated_definition in (
+            "template_id=",
+            "schema=hierarchy",
+            "L1=",
+            "executor/wrong_coordinate",
+            "controller/coordinate_mismatch",
+            "F6/",
+            "function=F9",
+            "Function=E2",
+            "R5",
+        ):
+            with self.subTest(definition=duplicated_definition):
+                self.assertNotIn(duplicated_definition, text)
+
+    def test_generic_runtime_contains_no_framework_architecture_memory(self):
+        paths = [
+            ROOT / "stepwise/skills/v3/gui-trajectory-attribution/SKILL.md",
+            ROOT / "stepwise/skills/v3/gui-trajectory-attribution/references/framework-profiles.md",
+            ROOT / "stepwise/skills/v3/gui-trajectory-attribution/references/judgment-rules.md",
+            ROOT / "stepwise/skills/v3/gui-trajectory-attribution/references/output-contract.md",
+            ROOT / "stepwise/skills/v3/gui-trajectory-attribution/references/label-boundaries.md",
+            ROOT / "stepwise/skills/v3/gui-trajectory-attribution/scripts/validate_result.py",
+            ROOT / "stepwise/prompts/stepwise_en.txt",
+            ROOT / "stepwise/run_case.py",
+            ROOT / "stepwise/engine/native_engine.py",
+            ROOT / "stepwise/engine/framework_architecture.py",
+            ROOT / "stepwise/engine/validate_result.py",
+        ]
+        forbidden = ("Mobile-Agent", "Agent-S2", "UniPath", "UIPath", "OSWorld",
+                     "mobile_agent_v3", "agent_s2", "uipath")
+        for path in paths:
+            text = path.read_text(encoding="utf-8")
+            for value in forbidden:
+                with self.subTest(path=path.name, value=value):
+                    self.assertNotIn(value, text)
 
     def test_all_json_schemas_are_well_formed(self):
         for path in [
@@ -242,6 +305,360 @@ class UIPathManifestTests(unittest.TestCase):
     def test_requested_case_must_exist(self):
         with self.assertRaisesRegex(ValueError, "missing"):
             self.build(["com.synthetic.app__missing"])
+
+
+class FrameworkInputSelectionTests(unittest.TestCase):
+    def test_architecture_excludes_legacy_knowledge(self):
+        class FakeEngine:
+            def __init__(self):
+                self.knowledge_calls = 0
+
+            def select_framework_binding(self, registry, framework):
+                return registry[framework]
+
+            def resolve_framework_architecture(self, binding, base, identity):
+                return {"mode": "generated"}
+
+            def resolve_framework_knowledge(self, binding, base, identity):
+                self.knowledge_calls += 1
+                return {"mode": "legacy"}
+
+        engine = FakeEngine()
+        knowledge, architecture = run_case.resolve_framework_inputs(
+            engine,
+            {
+                "framework_architectures": {"mobile_agent_v3": {"schema": "architecture"}},
+                "framework_knowledge": {"schema": "legacy"},
+            },
+            Path("/tmp"),
+            {"framework": "mobile_agent_v3"},
+        )
+        self.assertIsNone(knowledge)
+        self.assertEqual(architecture["mode"], "generated")
+        self.assertEqual(engine.knowledge_calls, 0)
+
+    def test_legacy_knowledge_is_used_only_without_architecture(self):
+        class FakeEngine:
+            def __init__(self):
+                self.knowledge_calls = 0
+
+            def select_framework_binding(self, registry, framework):
+                self.assertions = (registry, framework)
+                return None
+
+            def resolve_framework_architecture(self, binding, base, identity):
+                return None
+
+            def resolve_framework_knowledge(self, binding, base, identity):
+                self.knowledge_calls += 1
+                return {"mode": "legacy"}
+
+        engine = FakeEngine()
+        knowledge, architecture = run_case.resolve_framework_inputs(
+            engine,
+            {"framework_knowledge": {"schema": "legacy"}},
+            Path("/tmp"),
+            {"framework": "mobile_agent_v3"},
+        )
+        self.assertEqual(knowledge["mode"], "legacy")
+        self.assertIsNone(architecture)
+        self.assertEqual(engine.knowledge_calls, 1)
+        self.assertEqual(engine.assertions, (None, "mobile_agent_v3"))
+
+
+class FrameworkKnowledgeTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name) / "snapshot"
+        source = self.root / "source/pkg/a.py"
+        source.parent.mkdir(parents=True)
+        source.write_text("VALUE = 1\n", encoding="utf-8")
+        self.files = {"pkg/a.py": run_case.sha256(source)}
+        snapshot = {
+            "schema": "framework-knowledge-snapshot-v1",
+            "framework": "mobile_agent_v3",
+            "mode": "hybrid",
+            "repo_path": "synthetic",
+            "repo_revision": "deadbeef",
+            "source_dirty": False,
+            "tree_sha256": "tree",
+            "files": self.files,
+            "source_file_count": 1,
+        }
+        save(self.root / "snapshot.json", snapshot)
+        save(self.root / "framework_index.json", {
+            "schema": "framework-source-index-v1",
+            "framework": "mobile_agent_v3",
+            "mode": "hybrid",
+            "repo_revision": "deadbeef",
+            "tree_sha256": "tree",
+        })
+        (self.root / "framework_knowledge_contract.md").write_text("synthetic contract\n", encoding="utf-8")
+        self.binding = {
+            "schema": "framework-knowledge-binding-v1",
+            "framework": "mobile_agent_v3",
+            "mode": "hybrid",
+            "snapshot_root": str(self.root),
+            "repo_revision": "deadbeef",
+            "tree_sha256": "tree",
+            "snapshot_manifest_sha256": run_case.sha256(self.root / "snapshot.json"),
+            "index_sha256": run_case.sha256(self.root / "framework_index.json"),
+            "contract_sha256": run_case.sha256(self.root / "framework_knowledge_contract.md"),
+        }
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def resolve(self):
+        return ENGINE.resolve_framework_knowledge(self.binding, self.root.parent, {"framework": "mobile_agent_v3"})
+
+    def test_absent_binding_keeps_legacy_behavior(self):
+        self.assertIsNone(ENGINE.resolve_framework_knowledge(None, self.root.parent, {"framework": "mobile_agent_v3"}))
+
+    def test_valid_snapshot_is_accepted(self):
+        resolved = self.resolve()
+        self.assertEqual(resolved["tree_sha256"], "tree")
+        self.assertEqual(resolved["source_file_count"], 1)
+
+    def test_resolved_snapshot_installs_into_case_workspace(self):
+        workspace = Path(self.temp.name) / "workspace"
+        out = Path(self.temp.name) / "out"
+        workspace.mkdir()
+        out.mkdir()
+        installed = ENGINE.install_framework_knowledge(
+            {"framework_knowledge": self.resolve()}, workspace, out
+        )
+        self.assertTrue((workspace / ".framework-knowledge/source/pkg/a.py").is_file())
+        self.assertEqual(installed["index_sha256"], self.binding["index_sha256"])
+        self.assertEqual(run_case.read_json(out / "framework_knowledge_binding.json")["contract_sha256"], self.binding["contract_sha256"])
+
+    def test_tampered_index_is_rejected(self):
+        index = run_case.read_json(self.root / "framework_index.json")
+        index["usage"] = {"authority": "tampered"}
+        save(self.root / "framework_index.json", index)
+        with self.assertRaisesRegex(ValueError, "index changed"):
+            self.resolve()
+
+    def test_unregistered_snapshot_file_is_rejected(self):
+        (self.root / "unexpected.md").write_text("synthetic\n", encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "tree mismatch"):
+            self.resolve()
+
+    def test_unhashed_binding_is_rejected(self):
+        self.binding.pop("index_sha256")
+        with self.assertRaisesRegex(ValueError, "index/contract hashes"):
+            self.resolve()
+
+    def test_architecture_installation_suppresses_legacy_knowledge(self):
+        with patch.object(
+            ENGINE, "install_framework_architecture", return_value={"mode": "generated"}
+        ), patch.object(ENGINE, "install_framework_knowledge") as legacy:
+            knowledge, architecture = ENGINE.install_framework_inputs(
+                {"framework_architecture": {}, "framework_knowledge": {}}, Path("."), Path(".")
+            )
+        self.assertIsNone(knowledge)
+        self.assertEqual(architecture["mode"], "generated")
+        legacy.assert_not_called()
+
+    def test_legacy_knowledge_installs_when_architecture_is_absent(self):
+        with patch.object(
+            ENGINE, "install_framework_architecture", return_value=None
+        ), patch.object(
+            ENGINE, "install_framework_knowledge", return_value={"mode": "legacy"}
+        ) as legacy:
+            knowledge, architecture = ENGINE.install_framework_inputs(
+                {"framework_knowledge": {}}, Path("."), Path(".")
+            )
+        self.assertEqual(knowledge["mode"], "legacy")
+        self.assertIsNone(architecture)
+        legacy.assert_called_once()
+
+
+class FrameworkArchitectureTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        self.repo = self.root / "repo"
+        source = self.repo / "pkg/core.py"
+        source.parent.mkdir(parents=True)
+        source.write_text(
+            '"""Synthetic architecture fixture."""\n\n'
+            "from dataclasses import dataclass, field\n\n"
+            "@dataclass\n"
+            "class SharedState:\n"
+            "    action_history: list = field(default_factory=list)\n"
+            "    plan: str = ''\n\n"
+            "class Runner:\n"
+            '    """Coordinates synthetic execution."""\n\n'
+            "    def __init__(self, state: SharedState) -> None:\n"
+            "        self.state: SharedState = state\n"
+            "        self.retries: int = 2\n"
+            '        self.last_action = ""\n'
+            "        self.first, self.second = 1, 2\n\n"
+            "    def run(self) -> str:\n"
+            "        self.retries += 1\n"
+            '        self.last_action = "click"\n'
+            "        return self.state.plan\n\n"
+            "class Planner:\n"
+            "    def plan(self, state: SharedState) -> dict:\n"
+            "        return {'plan': state.plan}\n\n"
+            "class Executor:\n"
+            "    def execute(self, state: SharedState) -> str:\n"
+            "        return 'click'\n\n"
+            "def run_task(state: SharedState) -> dict:\n"
+            "    planner = Planner()\n"
+            "    executor = Executor()\n"
+            "    return {'plan': planner.plan(state), 'action': executor.execute(state)}\n",
+            encoding="utf-8",
+        )
+        source.parent.joinpath("actions.py").write_text(
+            "class ActionCatalog:\n"
+            "    action_pool = ['click']\n",
+            encoding="utf-8",
+        )
+        subprocess.run(["git", "init", "-q"], cwd=self.repo, check=True)
+        subprocess.run(["git", "add", "pkg"], cwd=self.repo, check=True)
+        subprocess.run(
+            ["git", "-c", "user.name=Synthetic", "-c", "user.email=synthetic@example.invalid",
+             "commit", "-qm", "synthetic architecture"],
+            cwd=self.repo, check=True,
+        )
+        self.revision = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=self.repo, check=True,
+            capture_output=True, text=True,
+        ).stdout.strip()
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def compile(self, **kwargs):
+        return framework_architecture.compile_repository(
+            self.repo, "synthetic_framework", revision=self.revision, **kwargs
+        )
+
+    def test_compiler_extracts_shared_state_entrypoint_and_contracts(self):
+        compiled = self.compile()
+        names = {node["name"] for node in compiled["nodes"]}
+        self.assertTrue({"SharedState", "Runner", "Planner", "Executor", "ActionCatalog", "run_task"} <= names)
+        self.assertIn("pkg.core:run_task", compiled["entrypoints"])
+        state = next(node for node in compiled["nodes"] if node["name"] == "SharedState")
+        self.assertEqual({field["name"] for field in state["fields"]}, {"action_history", "plan"})
+        self.assertIn("pkg.core:SharedState", compiled["shared_state_candidates"])
+        runner = next(node for node in compiled["nodes"] if node["name"] == "Runner")
+        runner_fields = {field["name"]: field for field in runner["fields"]}
+        self.assertEqual(
+            set(runner_fields), {"state", "retries", "last_action", "first", "second"}
+        )
+        self.assertEqual(runner_fields["retries"]["value"], 2)
+        self.assertIn("__init__", runner_fields["retries"]["written_in"])
+        self.assertIn("run", runner_fields["retries"]["written_in"])
+        self.assertIn("run", runner_fields["retries"]["read_in"])
+        self.assertIn("run", runner_fields["state"]["read_in"])
+        self.assertEqual(runner_fields["last_action"]["value"], "")
+        self.assertIsNone(runner_fields["first"]["value"])
+        self.assertIsNone(runner_fields["second"]["value"])
+        self.assertEqual(compiled["generator"]["version"], "3")
+        modules = {module["path"]: module for module in compiled["modules"]}
+        self.assertEqual(modules["pkg/core.py"]["summary"], "Synthetic architecture fixture.")
+        self.assertEqual(modules["pkg/core.py"]["summary_source"], "docstring")
+        self.assertIn("dataclasses", modules["pkg/core.py"]["imports"])
+        self.assertEqual(modules["pkg/actions.py"]["summary"], "Defines 1 top-level component.")
+        self.assertEqual(modules["pkg/actions.py"]["summary_source"], "component_count")
+        self.assertIn("pkg.actions:ActionCatalog", compiled["action_components"])
+        self.assertNotIn("pkg.core:Runner", compiled["action_components"])
+        self.assertNotIn("pkg.core:SharedState", compiled["action_components"])
+
+    def test_revision_mismatch_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "revision"):
+            framework_architecture.compile_repository(
+                self.repo, "synthetic_framework", revision="0" * 40
+            )
+
+    def test_dirty_selected_source_is_rejected(self):
+        (self.repo / "pkg/core.py").write_text("VALUE = 1\n", encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "uncommitted"):
+            self.compile()
+
+    def test_generated_artifact_round_trip_and_install(self):
+        compiled = self.compile()
+        artifact_root = self.root / "artifact"
+        artifact = framework_architecture.write_artifact(artifact_root, compiled)
+        binding = framework_architecture.bind_artifact(artifact_root, artifact)
+        resolved = ENGINE.resolve_framework_architecture(
+            binding, self.root, {"framework": "synthetic_framework"}
+        )
+        self.assertEqual(resolved["mode"], "generated")
+        self.assertEqual(resolved["repo_revision"], self.revision)
+        workspace = self.root / "workspace"
+        out = self.root / "out"
+        workspace.mkdir()
+        out.mkdir()
+        installed = ENGINE.install_framework_architecture(
+            {"framework_architecture": resolved}, workspace, out
+        )
+        self.assertTrue((workspace / ".framework-architecture/architecture.md").is_file())
+        self.assertEqual(installed["source_tree_sha256"], binding["source_tree_sha256"])
+        persisted = run_case.read_json(out / "framework_architecture_binding.json")
+        self.assertEqual(persisted["artifact_sha256"], binding["artifact_sha256"])
+
+    def test_manual_overview_uses_the_same_resolver(self):
+        compiled = framework_architecture.compile_manual(
+            "synthetic_framework", "Synthetic manual architecture overview."
+        )
+        artifact_root = self.root / "manual"
+        artifact = framework_architecture.write_artifact(artifact_root, compiled)
+        binding = framework_architecture.bind_artifact(artifact_root, artifact)
+        resolved = ENGINE.resolve_framework_architecture(
+            binding, self.root, {"framework": "synthetic_framework"}
+        )
+        self.assertEqual(resolved["mode"], "manual")
+        self.assertIsNone(resolved["repo_revision"])
+
+    def test_tampered_architecture_is_rejected(self):
+        artifact_root = self.root / "artifact"
+        artifact = framework_architecture.write_artifact(artifact_root, self.compile())
+        binding = framework_architecture.bind_artifact(artifact_root, artifact)
+        save(artifact_root / "architecture.json", {"schema": "tampered"})
+        with self.assertRaisesRegex(ValueError, "JSON changed"):
+            ENGINE.resolve_framework_architecture(
+                binding, self.root, {"framework": "synthetic_framework"}
+            )
+
+    def test_unregistered_artifact_file_is_rejected(self):
+        artifact_root = self.root / "artifact"
+        artifact = framework_architecture.write_artifact(artifact_root, self.compile())
+        binding = framework_architecture.bind_artifact(artifact_root, artifact)
+        (artifact_root / "unexpected.txt").write_text("tampered\n", encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "tree mismatch"):
+            ENGINE.resolve_framework_architecture(
+                binding, self.root, {"framework": "synthetic_framework"}
+            )
+
+    def test_symlink_in_artifact_is_rejected(self):
+        artifact_root = self.root / "artifact"
+        artifact = framework_architecture.write_artifact(artifact_root, self.compile())
+        binding = framework_architecture.bind_artifact(artifact_root, artifact)
+        (artifact_root / "linked.md").symlink_to(self.repo / "pkg/core.py")
+        with self.assertRaisesRegex(ValueError, "symlink"):
+            ENGINE.resolve_framework_architecture(
+                binding, self.root, {"framework": "synthetic_framework"}
+            )
+
+    def test_binding_registry_selects_only_the_current_framework(self):
+        binding = {"schema": framework_architecture.BINDING_SCHEMA,
+                   "framework": "synthetic_framework", "artifact_root": "."}
+        self.assertIs(ENGINE.select_framework_binding(
+            {"synthetic_framework": binding}, "synthetic_framework"), binding)
+        with self.assertRaisesRegex(ValueError, "No framework architecture binding"):
+            ENGINE.select_framework_binding({"other": binding}, "synthetic_framework")
+
+
+class FrameworkArchitectureBuilderTests(unittest.TestCase):
+    def test_cross_drive_relative_path_falls_back_to_absolute(self):
+        builder = load_architecture_builder()
+        with patch.object(builder.os.path, "relpath", side_effect=ValueError("different drives")):
+            value = builder.relative_path(Path("D:/artifact"), Path("C:/manifest"))
+        self.assertEqual(value, "D:/artifact")
 
 
 class InputTests(unittest.TestCase):

@@ -334,11 +334,6 @@ def validate_result(data, references=REFERENCES, evidence_root=None, access_rece
         if leaf in actor_mapping['label_stage_constraints']:
             check(cause['stage'] in actor_mapping['label_stage_constraints'][leaf],
                   f"{name}: label/stage conflicts with declared mechanism")
-        if entry["framework"] in ("mobile_agent_v3", "agent_s2"):
-            if actor in ("manager", "planner"):
-                check(cause["stage"] not in ("grounding", "adaptation", "execution"),
-                      f"{name}: Manager stage conflicts with framework responsibility")
-
         if entry["schema"] == "hierarchy":
             if labels["l1"] == "framework" and labels["l2"] is not None:
                 aliases = actor_mapping["hierarchy"].get(entry["framework"], {}).get(labels["l2"], [])
@@ -387,7 +382,7 @@ def validate_result(data, references=REFERENCES, evidence_root=None, access_rece
                     node = node[value].get("l2" if key == "l1" else "l3", {})
         else:
             check(all(labels[k] is None for k in ("l1", "l2", "l3")),
-                  f"{name}: UniPath dimensions cannot be encoded as L1/L2/L3")
+                  f"{name}: dimensions template cannot be encoded as L1/L2/L3")
             for key, collection in [
                 ("module", "modules"),
                 ("function", "root_cause_functions" if name == "initial" else "recovery_functions"),

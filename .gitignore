@@ -11,6 +11,7 @@ config/*.env
 .venv/
 data/*
 !data/build_uipath_manifest.py
+!data/build_framework_architecture.py
 artifacts/
 *.zip
 
