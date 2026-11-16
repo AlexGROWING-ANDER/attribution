@@ -1,6 +1,6 @@
 ---
 name: gui-attribution-flux
-description: "使用 Flux 原生会话分析 GUI 失败轨迹；输入为 cases 与框架代码，通过现有归因规则逐步提交和校验，无需模型配置、额外凭证或模型 CLI"
+description: "使用 Flux 原生会话分析 GUI 轨迹；输入为 cases 与框架代码，通过现有归因规则逐步提交和校验，无需模型配置、额外凭证或模型 CLI"
 ---
 
 # Flux 原生 GUI 轨迹归因

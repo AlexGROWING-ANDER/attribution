@@ -22,6 +22,8 @@ python3 data/bootstrap_attribution.py run --prepared /path/to/prepared --jobs 2 
 
 支持 `Agent_S2`、`Mobile_Agent_v3`、`uipath`。目录和数据包名称不区分大小写，保留实际路径，兼容 `ui_path` 等旧名称；多个匹配目录时报歧义。
 
+annotation 是可选元数据，不是必需输入。缺失时直接枚举 case 目录，并从原始控制台日志、`manager.json` 或 `task_meta.json` 提取任务指令；存在时用于补充 identity，并对显式标记 `excluded` 的 Agent_S2/UiPath 案例保持排除。成功案例同样按冻结的归因 Skill 分析。
+
 每条案例清单绑定原任务、attempt、source ID、材料哈希、步骤映射和人工网站图库范围，不包含 GT。原图使用原有 q85 WebP 缓存、保持尺寸；有损交付选择保持明确记录，不重新压缩或生成 contact sheet。
 
 架构概览由固定源码或人工概览生成，只用于理解框架，不作为 attempt 证据。真实 Git 源码保留 HEAD 和脏文件检查，未跟踪材料副本不因父目录 Git 仓误判。

@@ -11,6 +11,7 @@ description: "在 Flux 中从 GUI cases 与框架源码执行归因：准备可�
 
 - 必需输入：cases 路径、框架代码路径、新输出目录。URL 先按当前用户授权读取到本地，遵循平台仓库准备规则；不能获得材料时报告缺口。
 - 支持 `Agent_S2`、`Mobile_Agent_v3`、`uipath`，目录和数据包名不区分大小写，兼容 `ui_path` 等旧名称。存在多个匹配目录则报告歧义。
+- annotations 不是必需输入。缺失时按 cases 目录发现全部案例，并从原始控制台日志、Mobile `manager.json` 或 UiPath `task_meta.json` 提取任务指令；存在时用于补充 identity，Agent_S2/UiPath 仍尊重显式 `excluded`。
 - 模型只读取本案例工作区里的材料、归因 Skill、协议与架构概览。不读取 GT、标注结论、其他案例或历史预测。
 - 架构概览只帮助理解框架，不能作为 attempt 证据，不能据此选择标签或错误步骤。
 - 原生 Flux 子任务继承平台权限。每个 case 独立工作区、独立上下文和提交记录；这不声称额外创建了物理文件系统沙箱。

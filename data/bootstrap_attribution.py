@@ -107,7 +107,7 @@ def _package_candidates(cases: Path, adapters: list[dict], framework: str | None
                     or resolved.is_relative_to(case_root)
                 )
                 if (relevant and group.name.casefold() in accepted_groups
-                        and annotation.is_file() and case_root.is_dir()):
+                        and case_root.is_dir()):
                     candidates.append((adapter, group.parent, package, case_root, annotation))
     # Also accept a dataset root containing <group>/<package>.
     for adapter in adapters:
@@ -117,7 +117,7 @@ def _package_candidates(cases: Path, adapters: list[dict], framework: str | None
             for package in matching_directories(group, (adapter["package"],)):
                 annotation = package / adapter["annotation"]
                 case_root = package / adapter["cases"]
-                if annotation.is_file() and case_root.is_dir():
+                if case_root.is_dir():
                     candidates.append((adapter, resolved, package, case_root, annotation))
 
     unique = []

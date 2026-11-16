@@ -1,4 +1,4 @@
-"""Build model-facing manifests for the non-success GPT-5.6 benchmark cases."""
+"""Build model-facing manifests for the GPT-5.6 benchmark cases."""
 from __future__ import annotations
 
 import argparse
@@ -21,10 +21,84 @@ DEFAULT_BASE = Path("/Users/xudonglai/Desktop/projects/failure_attribution_bench
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
 STEP_IMAGE = re.compile(r"(?P<after>after_)?step_(?P<step>\d+)\.png$")
 AGENT_IMAGE = re.compile(r"(?:screenshot_)?step_(?P<step>\d+)\.png$")
+AGENT_CASE = re.compile(r"^(?P<app>.+)_(?P<test_id>test_\d+)$")
+USER_REQUEST = re.compile(r"### User Request ###\s*(.+?)(?:\n\s*---|\Z)", re.S)
 
 
 def read_json(path: Path):
     return json.loads(path.read_text(encoding="utf-8-sig"))
+
+
+def select_benchmark_rows(rows: list[dict]) -> list[dict]:
+    """Include successful cases while still honoring explicit exclusions."""
+    return [row for row in rows if not row.get("excluded", False)]
+
+
+def case_directories(root: Path) -> list[Path]:
+    return sorted(
+        path for path in root.iterdir() if path.is_dir() and not path.name.startswith(".")
+    )
+
+
+def agent_log_path(case_root: Path, test_id: str) -> Path:
+    names = ["original_console.log", f"{test_id}.log"]
+    for name in names:
+        path = case_root / name
+        if path.is_file():
+            return path
+    logs = sorted(case_root.glob("*.log"))
+    if logs:
+        return logs[0]
+    raise ValueError(f"{case_root.name}: no raw console log")
+
+
+def agent_instruction(case_root: Path, test_id: str) -> str:
+    runner_result = case_root / "runner_result.json"
+    if runner_result.is_file():
+        value = read_json(runner_result).get("instruction", "")
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    log_path = agent_log_path(case_root, test_id)
+    for line in log_path.read_text(encoding="utf-8-sig", errors="replace").splitlines():
+        if " Intent: " in line:
+            value = line.split(" Intent: ", 1)[1].strip()
+            if value:
+                return value
+    raise ValueError(f"{case_root.name}: cannot derive task instruction from its console log")
+
+
+def agent_case_descriptor(case_root: Path) -> dict:
+    match = AGENT_CASE.fullmatch(case_root.name)
+    if match is None:
+        raise ValueError(f"{case_root.name}: expected <app>_<test_id> directory name")
+    app, test_id = match.group("app"), match.group("test_id")
+    return {
+        "app": app,
+        "test_id": test_id,
+        "case_key": f"{app}::{test_id}",
+        "intent": agent_instruction(case_root, test_id),
+    }
+
+
+def mobile_instruction(case_root: Path) -> str:
+    step_dirs = sorted(
+        (path for path in case_root.glob("step_*") if path.is_dir()),
+        key=lambda path: int(path.name.split("_", 1)[1]),
+    )
+    if not step_dirs:
+        raise ValueError(f"{case_root.name}: no step logs")
+    manager = step_dirs[0] / "manager.json"
+    if not manager.is_file():
+        raise ValueError(f"{case_root.name}: first step has no manager.json")
+    value = read_json(manager)
+    for message in value.get("messages", []):
+        for item in message.get("content", []):
+            if item.get("type") != "text":
+                continue
+            match = USER_REQUEST.search(item.get("text", ""))
+            if match:
+                return match.group(1).strip()
+    raise ValueError(f"{case_root.name}: cannot derive task instruction from manager.json")
 
 
 def dataset_package(base: Path, framework: str, package_root: Path | None) -> Path:
@@ -156,15 +230,20 @@ def build_mobile(base: Path, cache_root: Path, registry: dict,
     cases_root = package / "cases" / "converted_121cases"
     annotation_root = package / "annotations" / "mobileagent_121"
     mapping_path = annotation_root / "映射表.csv"
-    with mapping_path.open(encoding="utf-8-sig", newline="") as handle:
-        rows = list(csv.DictReader(handle))
-    selected = [row for row in rows if row.get("status", "").strip().lower() != "success"]
+    rows = {}
+    if mapping_path.is_file():
+        with mapping_path.open(encoding="utf-8-sig", newline="") as handle:
+            rows = {row["case_id"]: row for row in csv.DictReader(handle)}
     cases = []
-    for row in selected:
-        case_id = row["case_id"]
-        case_root = cases_root / case_id
-        annotation = read_json(annotation_root / "annotations" / "mobile_agent_v3" / row["站点文件名"])
-        instruction = annotation.get("intent", "").strip()
+    for case_root in case_directories(cases_root):
+        case_id = case_root.name
+        row = rows.get(case_id)
+        annotation_path = (
+            annotation_root / "annotations" / "mobile_agent_v3" / row["站点文件名"]
+            if row and row.get("站点文件名") else None
+        )
+        annotation = read_json(annotation_path) if annotation_path and annotation_path.is_file() else {}
+        instruction = annotation.get("intent", "").strip() or mobile_instruction(case_root)
         if not instruction:
             raise ValueError(f"{case_id}: empty mobile instruction")
         step_dirs = sorted(
@@ -234,11 +313,13 @@ def build_agent_s2(base: Path, cache_root: Path, registry: dict,
                    *, package_root: Path | None = None) -> dict:
     package = dataset_package(base, "agent_s2", package_root)
     cases_root = package / "cases" / "agents"
-    annotations = read_json(package / "annotations" / "Agent-S2_完整标注.json")
-    selected = [
-        item for item in annotations
-        if item.get("status") != "success" and not item.get("excluded", False)
-    ]
+    annotation_path = package / "annotations" / "Agent-S2_完整标注.json"
+    selected = (
+        select_benchmark_rows(read_json(annotation_path))
+        if annotation_path.is_file() else None
+    )
+    if selected is None:
+        selected = [agent_case_descriptor(case_root) for case_root in case_directories(cases_root)]
     cases = []
     for annotation in selected:
         case_root = agent_case_dir(cases_root, annotation)
@@ -254,11 +335,7 @@ def build_agent_s2(base: Path, cache_root: Path, registry: dict,
             "steps": steps,
             "sha256": sha256(case_root / "traj.json"),
         }]
-        log_names = [name for name in ("original_console.log", f"{annotation['test_id']}.log")
-                     if (case_root / name).is_file()]
-        if not log_names:
-            raise ValueError(f"{case_id}: no raw console log")
-        log_path = case_root / log_names[0]
+        log_path = agent_log_path(case_root, annotation["test_id"])
         inventory.append({
             "source": log_path.name,
             "kind": "log",
@@ -308,11 +385,11 @@ def build_uipath(base: Path, cache_root: Path, registry: dict,
                  *, package_root: Path | None = None) -> dict:
     package = dataset_package(base, "uipath", package_root)
     cases_root = package / "cases" / "unipath_130"
-    annotations = read_json(package / "annotations" / "UniPath_完整标注.json")
-    selected = [
-        item for item in annotations
-        if item.get("status") != "success" and not item.get("excluded", False)
-    ]
+    annotation_path = package / "annotations" / "UniPath_完整标注.json"
+    selected = (
+        select_benchmark_rows(read_json(annotation_path))
+        if annotation_path.is_file() else None
+    )
     by_key = {}
     for case_root in sorted(path for path in cases_root.iterdir() if path.is_dir()):
         meta_path = case_root / "task_meta.json"
@@ -324,8 +401,11 @@ def build_uipath(base: Path, cache_root: Path, registry: dict,
             raise ValueError(f"Duplicate UI Path task key: {key}")
         by_key[key] = (case_root, meta)
     cases = []
-    for annotation in selected:
-        case_root, meta = by_key[annotation["case_key"]]
+    entries = (
+        [(annotation, by_key[annotation["case_key"]]) for annotation in selected]
+        if selected is not None else [(None, value) for value in by_key.values()]
+    )
+    for annotation, (case_root, meta) in entries:
         case_id = case_root.name
         trajectory_path = case_root / "trajectory.jsonl"
         trajectory = [
@@ -367,7 +447,8 @@ def build_uipath(base: Path, cache_root: Path, registry: dict,
         identity = template_identity(
             registry, "uipath", case_id, "uipath",
             "failure_attribution_benchmark/ui_path/gpt5.6",
-            annotation["case_key"], meta["intent"].strip(),
+            annotation["case_key"] if annotation else f"{meta['package']}::{meta['test_id']}",
+            meta["intent"].strip(),
             case_id, "uipath-trajectory-jsonl-v1",
         )
         cases.append(finalize_case(
@@ -396,9 +477,9 @@ def main() -> int:
     )
     args.cache_root.mkdir(parents=True, exist_ok=True)
     builders = {
-        "mobile": (build_mobile, "gpt56_mobile_fail50_manifest.json"),
-        "agent_s2": (build_agent_s2, "gpt56_agents2_fail71_manifest.json"),
-        "uipath": (build_uipath, "gpt56_uipath_non_success51_manifest.json"),
+        "mobile": (build_mobile, "gpt56_mobile_manifest.json"),
+        "agent_s2": (build_agent_s2, "gpt56_agents2_manifest.json"),
+        "uipath": (build_uipath, "gpt56_uipath_manifest.json"),
     }
     names = list(builders) if args.framework == "all" else [args.framework]
     summary = {}

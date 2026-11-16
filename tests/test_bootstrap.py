@@ -32,18 +32,38 @@ class BootstrapTests(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
-    def package(self, group: str, package: str, cases: str, annotation: str) -> Path:
+    def package(self, group: str, package: str, cases: str, annotation: str,
+                *, write_annotation: bool = True) -> Path:
         root = self.root / "benchmark" / group / package
         (root / cases / "case_001").mkdir(parents=True)
         (root / cases / "case_002").mkdir(parents=True)
-        annotation_path = root / annotation
-        annotation_path.parent.mkdir(parents=True, exist_ok=True)
-        annotation_path.write_text("{}", encoding="utf-8")
+        if write_annotation:
+            annotation_path = root / annotation
+            annotation_path.parent.mkdir(parents=True, exist_ok=True)
+            annotation_path.write_text("{}", encoding="utf-8")
         return root
+
+    def test_detects_layouts_without_annotation_files(self):
+        packages = [
+            ("Agent_S2", "gpt5.6-sol", "cases/agents",
+             "annotations/Agent-S2_完整标注.json", "agent_s2"),
+            ("Mobile_Agent_v3", "gpt5.6", "cases/converted_121cases",
+             "annotations/mobileagent_121/映射表.csv", "mobile_agent_v3"),
+            ("uipath", "gpt5.6", "cases/unipath_130",
+             "annotations/UniPath_完整标注.json", "uipath"),
+        ]
+        for group, package, cases, annotation, framework in packages:
+            with self.subTest(framework=framework):
+                actual = self.package(
+                    group, package, cases, annotation, write_annotation=False,
+                )
+                layout = self.bootstrap.detect_layout(actual / cases, self.adapters)
+                self.assertEqual(layout["framework"], framework)
+                self.assertFalse(Path(layout["annotation"]).exists())
 
     def test_detects_registered_layout_from_cases_and_dataset_root(self):
         mobile = self.package(
-            "mobile_Agent_v3", "gpt5.6-sol", "cases/converted_121cases",
+            "mobile_Agent_v3", "gpt5.6", "cases/converted_121cases",
             "annotations/mobileagent_121/映射表.csv",
         )
         cases_root = mobile / "cases/converted_121cases"
@@ -62,7 +82,7 @@ class BootstrapTests(unittest.TestCase):
             "annotations/Agent-S2_完整标注.json",
         )
         uipath = self.package(
-            "ui_path", "gpt5.6-sol", "cases/unipath_130",
+            "ui_path", "gpt5.6", "cases/unipath_130",
             "annotations/UniPath_完整标注.json",
         )
         self.assertEqual(
@@ -80,8 +100,8 @@ class BootstrapTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "No supported dataset layout"):
             self.bootstrap.detect_layout(unknown, self.adapters)
 
-        self.package("mobile_Agent_v3", "gpt5.6-sol", "cases/converted_121cases", "annotations/mobileagent_121/映射表.csv")
-        self.package("ui_path", "gpt5.6-sol", "cases/unipath_130", "annotations/UniPath_完整标注.json")
+        self.package("mobile_Agent_v3", "gpt5.6", "cases/converted_121cases", "annotations/mobileagent_121/映射表.csv")
+        self.package("ui_path", "gpt5.6", "cases/unipath_130", "annotations/UniPath_完整标注.json")
         with self.assertRaisesRegex(ValueError, "ambiguous"):
             self.bootstrap.detect_layout(self.root / "benchmark", self.adapters)
 
@@ -89,9 +109,9 @@ class BootstrapTests(unittest.TestCase):
         packages = [
             ("Agent_S2", "GPT5.6-SOL", "cases/agents",
              "annotations/Agent-S2_完整标注.json", "agent_s2"),
-            ("Mobile_Agent_v3", "gpt5.6-sol", "cases/converted_121cases",
+            ("Mobile_Agent_v3", "gpt5.6", "cases/converted_121cases",
              "annotations/mobileagent_121/映射表.csv", "mobile_agent_v3"),
-            ("uipath", "gpt5.6-sol", "cases/unipath_130",
+            ("uipath", "gpt5.6", "cases/unipath_130",
              "annotations/UniPath_完整标注.json", "uipath"),
         ]
         builder = self.bootstrap.load_manifest_builder()
@@ -110,9 +130,9 @@ class BootstrapTests(unittest.TestCase):
                 )
 
     def test_directory_alias_collision_is_rejected(self):
-        self.package("uipath", "gpt5.6-sol", "cases/unipath_130",
+        self.package("uipath", "gpt5.6", "cases/unipath_130",
                      "annotations/UniPath_完整标注.json")
-        self.package("ui_path", "gpt5.6-sol", "cases/unipath_130",
+        self.package("ui_path", "gpt5.6", "cases/unipath_130",
                      "annotations/UniPath_完整标注.json")
         with self.assertRaisesRegex(ValueError, "ambiguous"):
             self.bootstrap.detect_layout(self.root / "benchmark", self.adapters, "uipath")
@@ -135,9 +155,44 @@ class BootstrapTests(unittest.TestCase):
             self.assertEqual(self.bootstrap.build_manifest(layout, cache), manifest)
         self.assertEqual(build.call_args.kwargs["package_root"], actual.resolve())
 
+    def test_manifest_builder_includes_success_but_skips_explicit_exclusions(self):
+        builder = self.bootstrap.load_manifest_builder()
+        rows = [
+            {"case_id": "failed", "status": "fail"},
+            {"case_id": "successful", "status": "success"},
+            {"case_id": "blocked", "status": "precondition_blocked"},
+            {"case_id": "excluded", "status": "excluded", "excluded": True},
+        ]
+        self.assertEqual(
+            [row["case_id"] for row in builder.select_benchmark_rows(rows)],
+            ["failed", "successful", "blocked"],
+        )
+
+    def test_manifest_builder_derives_instructions_without_annotations(self):
+        builder = self.bootstrap.load_manifest_builder()
+        agent = self.root / "agent/com.example_test_1"
+        agent.mkdir(parents=True)
+        (agent / "original_console.log").write_text(
+            "[2026-01-01 00:00:00,000 INFO] Intent: 打开应用并完成任务\n",
+            encoding="utf-8",
+        )
+        descriptor = builder.agent_case_descriptor(agent)
+        self.assertEqual(descriptor["case_key"], "com.example::test_1")
+        self.assertEqual(descriptor["intent"], "打开应用并完成任务")
+
+        mobile = self.root / "mobile/case_001"
+        (mobile / "step_1").mkdir(parents=True)
+        (mobile / "step_1/manager.json").write_text(json.dumps({
+            "messages": [{"content": [{
+                "type": "text",
+                "text": "### User Request ###\n搜索并打开目标页面\n\n---\nFollow the plan.",
+            }]}],
+        }, ensure_ascii=False), encoding="utf-8")
+        self.assertEqual(builder.mobile_instruction(mobile), "搜索并打开目标页面")
+
     def test_code_path_disambiguates_multi_framework_dataset_root(self):
-        self.package("mobile_Agent_v3", "gpt5.6-sol", "cases/converted_121cases", "annotations/mobileagent_121/映射表.csv")
-        self.package("ui_path", "gpt5.6-sol", "cases/unipath_130", "annotations/UniPath_完整标注.json")
+        self.package("mobile_Agent_v3", "gpt5.6", "cases/converted_121cases", "annotations/mobileagent_121/映射表.csv")
+        self.package("ui_path", "gpt5.6", "cases/unipath_130", "annotations/UniPath_完整标注.json")
         repository = self.root / "codes/Mobile-Agent-v3"
         (repository / "mobile_v3").mkdir(parents=True)
         layout = self.bootstrap.resolve_layout(
@@ -166,7 +221,7 @@ class BootstrapTests(unittest.TestCase):
 
     def test_prepare_builds_bound_manifest_and_record(self):
         mobile = self.package(
-            "mobile_Agent_v3", "gpt5.6-sol", "cases/converted_121cases",
+            "mobile_Agent_v3", "gpt5.6", "cases/converted_121cases",
             "annotations/mobileagent_121/映射表.csv",
         )
         repository = self.root / "codes/Mobile-Agent-v3"

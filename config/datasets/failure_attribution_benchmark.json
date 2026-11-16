@@ -5,7 +5,7 @@
       "id": "gpt56_mobile",
       "framework": "mobile_agent_v3",
       "group": "Mobile_Agent_v3",
-      "package": "gpt5.6-sol",
+      "package": "gpt5.6",
       "cases": "cases/converted_121cases",
       "annotation": "annotations/mobileagent_121/映射表.csv",
       "builder": "mobile"
@@ -24,7 +24,7 @@
       "framework": "uipath",
       "group": "uipath",
       "group_aliases": ["ui_path"],
-      "package": "gpt5.6-sol",
+      "package": "gpt5.6",
       "cases": "cases/unipath_130",
       "annotation": "annotations/UniPath_完整标注.json",
       "builder": "uipath"
