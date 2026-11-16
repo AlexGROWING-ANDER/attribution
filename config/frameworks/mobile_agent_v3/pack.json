@@ -1,0 +1,18 @@
+{
+  "schema": "framework-pack-v1",
+  "framework": "mobile_agent_v3",
+  "architecture": {
+    "mode": "generated",
+    "repo_env": "MOBILE_AGENT_V3_REPO",
+    "source_roots": [
+      "mobile_v3"
+    ],
+    "include": [
+      "**/*.py"
+    ],
+    "exclude": [
+      "**/*_test.py",
+      "**/test_*.py"
+    ]
+  }
+}

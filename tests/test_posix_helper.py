@@ -29,10 +29,21 @@ class PythonRevisionPrecheckTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.workspace = Path(self.temp.name)
         shutil.copyfile(ROOT / "stepwise/engine/io.py", self.workspace / "io.py")
-        self.case = {"available_steps": [1], "inventory": [
+        self.case = {"identity": {"id": "synthetic"}, "available_steps": [1], "inventory": [
             {"source_id": "S0001", "source": "step_1/manager.json", "kind": "log", "step": 1},
             {"source_id": "S0002", "source": "images/frame.png", "kind": "image", "step": None},
         ]}
+        self.plan = {
+            "schema": "case-checkpoint-plan-v1", "case_id": "synthetic",
+            "basis": ["instruction", "identity", "task_policy"],
+            "checkpoints": [{
+                "id": "CP1", "type": "goal", "object": "Synthetic object",
+                "requirement": "Synthetic requirement", "required": True,
+                "depends_on": [], "acceptance": "Direct screenshot supports the state",
+                "evidence_expectation": ["screenshot"],
+            }],
+        }
+        self.goal = {"id": "CP1", "object": "Synthetic object", "requirement": "Synthetic requirement"}
         self.original = {"step": 1, "verdict": "uncertain", "summary": "Initial observation", "evidence": [
             {"source_id": "S0001", "phase": "decision", "locator": "response", "observation": "A log entry"},
             {"source_id": "S0002", "phase": "after_action", "locator": "full image", "observation": "页面含‘收藏’按钮"},
@@ -40,9 +51,18 @@ class PythonRevisionPrecheckTests(unittest.TestCase):
         self.base = self.workspace / "step_judgments/step_001.json"
         self.revision = self.workspace / "step_judgments/revision_001.json"
         save(self.base, self.original)
-        save(self.workspace / "input_index.json", {"available_steps": [1], "sources": self.case["inventory"]})
+        save(self.workspace / "checkpoint_plan.schema.json", protocol.CHECKPOINT_SCHEMA)
+        save(self.workspace / "checkpoint_plan.json", self.plan)
+        plan_sha = hashlib.sha256((self.workspace / "checkpoint_plan.json").read_bytes()).hexdigest()
+        (self.workspace / "io_events.jsonl").write_text(json.dumps({
+            "at": 1, "mode": "checkpoint", "accepted": True,
+            "detail": "Saved checkpoint plan sha256=" + plan_sha,
+        }, ensure_ascii=False) + "\n", encoding="utf-8")
+        save(self.workspace / "input_index.json", {
+            "identity": self.case["identity"], "available_steps": [1], "sources": self.case["inventory"],
+        })
         save(self.workspace / "global_summary.schema.json", {"required": ["decision", "goals"]})
-        save(self.workspace / "global_summary.json", {"decision": "pending", "goals": []})
+        save(self.workspace / "global_summary.json", self.global_payload())
         self.receipt = {"events": [
             {"source": entry["source"], "success": True, "content_complete": True, "truncated": False}
             for entry in self.case["inventory"]
@@ -60,20 +80,24 @@ class PythonRevisionPrecheckTests(unittest.TestCase):
             timeout=20, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
 
+    def global_payload(self, status="unknown", evidence_ids=None) -> dict:
+        goal = {**self.goal, "status": status, "evidence_ids": evidence_ids or []}
+        return {"decision": "pending", "goals": [goal]}
+
     def assert_rejected(self, revised: dict, message: str) -> None:
         save(self.revision, revised)
         original_bytes = self.base.read_bytes()
         global_bytes = (self.workspace / "global_summary.json").read_bytes()
         for mode in ("global", "check"):
             with self.subTest(mode=mode):
-                payload = {"decision": "pending", "goals": []} if mode == "global" else None
+                payload = self.global_payload() if mode == "global" else None
                 result = self.invoke(mode, payload)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn(message, result.stdout + result.stderr)
                 self.assertEqual((self.workspace / "global_summary.json").read_bytes(), global_bytes)
         self.assertEqual(self.base.read_bytes(), original_bytes)
         events = [json.loads(line) for line in (self.workspace / "io_events.jsonl").read_text(encoding="utf-8").splitlines()]
-        self.assertTrue(all(event["accepted"] is False for event in events))
+        self.assertTrue(all(event["accepted"] is False for event in events if event["mode"] != "checkpoint"))
         with self.assertRaises(Exception):
             protocol.assemble(self.workspace, self.case, self.receipt)
 
@@ -85,15 +109,71 @@ class PythonRevisionPrecheckTests(unittest.TestCase):
         second = self.invoke("step", self.original)
         self.assertNotEqual(second.returncode, 0)
 
+    def test_checkpoint_is_required_and_cannot_be_resubmitted(self):
+        (self.workspace / "checkpoint_plan.json").unlink()
+        (self.workspace / "io_events.jsonl").unlink()
+        (self.workspace / "global_summary.json").unlink()
+        self.base.unlink()
+        blocked = self.invoke("step", self.original)
+        self.assertNotEqual(blocked.returncode, 0)
+        self.assertIn("Submit checkpoint_plan.json", blocked.stderr)
+        accepted = self.invoke("checkpoint", self.plan)
+        self.assertEqual(accepted.returncode, 0, accepted.stdout + accepted.stderr)
+        step = self.invoke("step", self.original)
+        self.assertEqual(step.returncode, 0, step.stdout + step.stderr)
+        duplicate = self.invoke("checkpoint", self.plan)
+        self.assertNotEqual(duplicate.returncode, 0)
+        self.assertIn("already saved", duplicate.stderr)
+
+    def test_checkpoint_is_rejected_after_step_files_exist(self):
+        (self.workspace / "checkpoint_plan.json").unlink()
+        (self.workspace / "io_events.jsonl").unlink()
+        (self.workspace / "global_summary.json").unlink()
+        result = self.invoke("checkpoint", self.plan)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("before step judgments", result.stderr)
+
+    def test_checkpoint_is_rejected_after_global_summary_exists(self):
+        (self.workspace / "checkpoint_plan.json").unlink()
+        (self.workspace / "io_events.jsonl").unlink()
+        self.base.unlink()
+        result = self.invoke("checkpoint", self.plan)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("before global summary", result.stderr)
+
+    def test_checkpoint_deletion_cannot_bypass_single_submission(self):
+        for path in (self.workspace / "checkpoint_plan.json", self.workspace / "io_events.jsonl",
+                     self.base, self.workspace / "global_summary.json"):
+            path.unlink()
+        first = self.invoke("checkpoint", self.plan)
+        self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
+        (self.workspace / "checkpoint_plan.json").unlink()
+        second = self.invoke("checkpoint", self.plan)
+        self.assertNotEqual(second.returncode, 0)
+        self.assertIn("already submitted", second.stderr)
+
+    def test_checkpoint_cannot_cite_trajectory_source_ids(self):
+        (self.workspace / "checkpoint_plan.json").unlink()
+        (self.workspace / "io_events.jsonl").unlink()
+        (self.workspace / "global_summary.json").unlink()
+        self.base.unlink()
+        plan = copy.deepcopy(self.plan)
+        plan["checkpoints"][0]["object"] = "S0001"
+        result = self.invoke("checkpoint", plan)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("must not cite trajectory evidence IDs", result.stderr)
+
     def test_step_order_is_enforced(self):
-        save(self.workspace / "input_index.json", {"available_steps": [1, 2], "sources": self.case["inventory"]})
+        save(self.workspace / "input_index.json", {
+            "identity": self.case["identity"], "available_steps": [1, 2], "sources": self.case["inventory"],
+        })
         self.base.unlink()
         result = self.invoke("step", {**self.original, "step": 2})
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("Current required step is 1", result.stderr)
 
     def test_without_revision_global_and_check_pass(self):
-        for mode, payload in (("global", {"decision": "pending", "goals": []}), ("check", None)):
+        for mode, payload in (("global", self.global_payload()), ("check", None)):
             result = self.invoke(mode, payload)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(len(protocol.assemble(self.workspace, self.case, self.receipt)["evidence"]), 2)
@@ -104,7 +184,7 @@ class PythonRevisionPrecheckTests(unittest.TestCase):
         revised["evidence"][0] = dict(reversed(list(revised["evidence"][0].items())))
         revised["evidence"].append({**revised["evidence"][1], "observation": "A new direct observation"})
         save(self.revision, revised)
-        for mode, payload in (("global", {"decision": "pending", "goals": []}), ("check", None)):
+        for mode, payload in (("global", self.global_payload()), ("check", None)):
             result = self.invoke(mode, payload)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         result = protocol.assemble(self.workspace, self.case, self.receipt)
@@ -159,24 +239,22 @@ class PythonRevisionPrecheckTests(unittest.TestCase):
     def test_unknown_global_evidence_ref_is_rejected(self):
         result = self.invoke("check")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        save(self.workspace / "global_summary.json", {"decision": "pending", "goals": [{"evidence_ids": ["E01_9"]}]})
+        save(self.workspace / "global_summary.json", self.global_payload(evidence_ids=["E01_9"]))
         result = self.invoke("check")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("Unknown evidence refs: E01_9", result.stderr)
 
     def test_global_rejects_unexpected_top_level_field(self):
-        result = self.invoke("global", {"decision": "pending", "goals": [], "extra": True})
+        result = self.invoke("global", {**self.global_payload(), "extra": True})
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("Unexpected field extra", result.stderr)
 
     def test_known_goal_rejects_module_output_only(self):
-        default = {"decision": "pending", "goals": []}
+        default = self.global_payload()
         for status in ("satisfied", "unsatisfied"):
             with self.subTest(status=status):
                 save(self.workspace / "global_summary.json", default)
-                invalid = {"decision": "pending", "goals": [
-                    {"id": "G1", "status": status, "evidence_ids": ["E01_1"]},
-                ]}
+                invalid = self.global_payload(status, ["E01_1"])
                 result = self.invoke("global", invalid)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn("known status needs screenshot evidence", result.stderr)
@@ -190,17 +268,13 @@ class PythonRevisionPrecheckTests(unittest.TestCase):
                 self.assertEqual(json.loads((self.workspace / "global_summary.json").read_text()), invalid)
 
     def test_known_goal_accepts_screenshot_evidence(self):
-        payload = {"decision": "pending", "goals": [
-            {"id": "G1", "status": "unsatisfied", "evidence_ids": ["E01_1", "E01_2"]},
-        ]}
+        payload = self.global_payload("unsatisfied", ["E01_1", "E01_2"])
         for mode, value in (("global", payload), ("check", None)):
             result = self.invoke(mode, value)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_unknown_goal_accepts_module_output_only(self):
-        payload = {"decision": "pending", "goals": [
-            {"id": "G1", "status": "unknown", "evidence_ids": ["E01_1"]},
-        ]}
+        payload = self.global_payload("unknown", ["E01_1"])
         for mode, value in (("global", payload), ("check", None)):
             result = self.invoke(mode, value)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -209,9 +283,7 @@ class PythonRevisionPrecheckTests(unittest.TestCase):
         log_only = {**self.original, "evidence": [self.original["evidence"][0]]}
         save(self.base, log_only)
         save(self.revision, {**log_only, "evidence": self.original["evidence"]})
-        payload = {"decision": "pending", "goals": [
-            {"id": "G1", "status": "satisfied", "evidence_ids": ["E01_2"]},
-        ]}
+        payload = self.global_payload("satisfied", ["E01_2"])
         for mode, value in (("global", payload), ("check", None)):
             result = self.invoke(mode, value)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -235,7 +307,25 @@ class PythonDerivedViewTests(unittest.TestCase):
             {"source_id": "S0002", "source": "images/frame.png", "kind": "image", "step": None,
              "sha256": hashlib.sha256(parent.read_bytes()).hexdigest()},
         ]
-        save(self.workspace / "input_index.json", {"available_steps": [1], "sources": self.sources})
+        save(self.workspace / "checkpoint_plan.schema.json", protocol.CHECKPOINT_SCHEMA)
+        save(self.workspace / "checkpoint_plan.json", {
+            "schema": "case-checkpoint-plan-v1", "case_id": "synthetic",
+            "basis": ["instruction", "identity", "task_policy"],
+            "checkpoints": [{
+                "id": "CP1", "type": "goal", "object": "Synthetic object",
+                "requirement": "Synthetic requirement", "required": True,
+                "depends_on": [], "acceptance": "Direct screenshot",
+                "evidence_expectation": ["screenshot"],
+            }],
+        })
+        plan_sha = hashlib.sha256((self.workspace / "checkpoint_plan.json").read_bytes()).hexdigest()
+        (self.workspace / "io_events.jsonl").write_text(json.dumps({
+            "at": 1, "mode": "checkpoint", "accepted": True,
+            "detail": "Saved checkpoint plan sha256=" + plan_sha,
+        }, ensure_ascii=False) + "\n", encoding="utf-8")
+        save(self.workspace / "input_index.json", {
+            "identity": {"id": "synthetic"}, "available_steps": [1], "sources": self.sources,
+        })
         self.by_id = {entry["source_id"]: entry for entry in self.sources}
         self.by_id["S0002"] = {**self.by_id["S0002"], "delivery_sha256": self.by_id["S0002"]["sha256"]}
 

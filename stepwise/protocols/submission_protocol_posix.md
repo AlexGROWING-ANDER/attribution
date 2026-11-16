@@ -5,6 +5,7 @@ Use the Skill for analysis and labels; this file defines submission mechanics. K
 ## Input and tool interface
 
 - input_index.json lists sources; step_index.json maps steps to log_pages and lists other_log_pages and gallery images. IDs do not establish image timing.
+- step_index.json also points to checkpoint_plan.schema.json. Build the plan from the original instruction, task identity and task policy before examining trajectory evidence.
 - Deliver every gallery image separately through native view_image, including duplicates. Keep original gallery bytes and dimensions unchanged; no resizing, contact sheets or OCR substitution.
 - A registered derived view is supplemental only. After a gallery image has been delivered, use the controlled helper for a crop or fixed enlargement; evidence must continue to cite the original `Sxxxx` source and derived views never count as gallery images:
 
@@ -13,12 +14,21 @@ python3 io.py derive --source-id S0001 --box 0,100,1080,800 --scale 2 --out deri
 ```
 
   `--box` is `x0,y0,x1,y1`, and `--scale` is 1-4. View the returned `derived_views/*.png` path with native view_image. Do not create or edit images with PIL, ImageMagick or other tools; unregistered images are rejected.
+- Checkpoint submission is required before any derived view, step record, global summary or check:
+
+```bash
+python3 io.py checkpoint <<'JSON'
+{checkpoint plan matching checkpoint_plan.schema.json}
+JSON
+```
+
+  Submit exactly once and do not edit checkpoint_plan.json afterwards. The helper gates later submissions and derived views; it cannot undo a raw file read, so preserve the required order yourself.
 - Read text files fully using native exec_command, one file per call, max_output_tokens at least 32000. Read other_log_pages before the step pass and assigned log_pages before submitting each step. Listings are not file contents.
 - Independent text reads may share a turn; independent view_image calls may be batched 4-6 per turn, one call per image.
 
 ## Local records and submission
 
-The two schema files define fields, enums and nulls. Per-step verdicts are local records; final attribution follows the Skill. Keep records compact, usually 1-3 evidence observations. Use registered source IDs; the runner binds source kinds and evidence IDs.
+The checkpoint, step and global schema files define fields, enums and nulls. Per-step verdicts are local records; final attribution follows the Skill. Keep records compact, usually 1-3 evidence observations. Use registered source IDs; the runner binds source kinds and evidence IDs.
 
 Submit steps in numeric order through io.py, which checks the next pending step, saves step_judgments/step_NNN.json and returns evidence IDs. Read the helper once if needed; do not edit it or overwrite committed steps. Use a real here-document:
 
@@ -35,6 +45,8 @@ After all materials and steps are complete, perform the Skill's synthesis and fi
 New direct observations may be appended in step_judgments/revision_NNN.json. Keep the original step, verdict and evidence prefix, and explain additions in limitations. Preserve base records.
 
 Submit global_summary.json using the global mode and the global schema. Reference returned evidence IDs; appended observations follow E{step:02d}_{j}. The caller constructs evidence, process, coverage and result.json; do not repeat those sections or write result.json/result.part*.json.
+
+Every required checkpoint must appear in `goals` with the same `id`, `object` and `requirement` as the accepted plan. Additional goals discovered from direct evidence are allowed. The plan itself is not evidence, cannot be cited with an evidence ID and cannot directly select a level or responsibility label.
 
 Every goal marked satisfied or unsatisfied must include at least one returned evidence ID whose registered source is an image; io.py binds that evidence to screenshot. module_output, scores or module self-report alone is insufficient. If no screenshot supports a known status, use unknown instead. io.py rejects a known goal without screenshot evidence in both global and check modes.
 

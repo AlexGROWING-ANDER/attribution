@@ -292,6 +292,18 @@ def validate_result(data, references=REFERENCES, evidence_root=None, access_rece
         n = goal["first_seen_step"]
         check(n is None or n in steps or (bool(steps) and n == max(steps) + 1),
               f"goal {goal['id']}: first_seen_step outside attempt")
+        if "steps" in goal or "step_range" in goal:
+            check("steps" in goal and "step_range" in goal,
+                  f"goal {goal['id']}: steps and step_range must both be present")
+            goal_steps = goal.get("steps")
+            valid_steps = isinstance(goal_steps, list) and all(type(value) is int and value >= 1 for value in goal_steps)
+            check(valid_steps, f"goal {goal['id']}: steps must be positive integers")
+            if valid_steps:
+                check(goal_steps == sorted(set(goal_steps)), f"goal {goal['id']}: steps must be sorted and unique")
+                allowed_steps = steps | ({max(steps) + 1} if steps else set())
+                check(all(value in allowed_steps for value in goal_steps), f"goal {goal['id']}: steps outside attempt")
+            expected_range = [goal_steps[0], goal_steps[-1]] if valid_steps and goal_steps else None
+            check(goal.get("step_range") == expected_range, f"goal {goal['id']}: step_range must equal the steps span")
         if goal["status"] == "satisfied":
             check(bool(goal["evidence_ids"]), f"satisfied goal {goal['id']} needs evidence")
         if goal["status"] in ("satisfied", "unsatisfied"):
@@ -334,11 +346,6 @@ def validate_result(data, references=REFERENCES, evidence_root=None, access_rece
         if leaf in actor_mapping['label_stage_constraints']:
             check(cause['stage'] in actor_mapping['label_stage_constraints'][leaf],
                   f"{name}: label/stage conflicts with declared mechanism")
-        if entry["framework"] in ("mobile_agent_v3", "agent_s2"):
-            if actor in ("manager", "planner"):
-                check(cause["stage"] not in ("grounding", "adaptation", "execution"),
-                      f"{name}: Manager stage conflicts with framework responsibility")
-
         if entry["schema"] == "hierarchy":
             if labels["l1"] == "framework" and labels["l2"] is not None:
                 aliases = actor_mapping["hierarchy"].get(entry["framework"], {}).get(labels["l2"], [])
@@ -387,7 +394,7 @@ def validate_result(data, references=REFERENCES, evidence_root=None, access_rece
                     node = node[value].get("l2" if key == "l1" else "l3", {})
         else:
             check(all(labels[k] is None for k in ("l1", "l2", "l3")),
-                  f"{name}: UniPath dimensions cannot be encoded as L1/L2/L3")
+                  f"{name}: dimensions template cannot be encoded as L1/L2/L3")
             for key, collection in [
                 ("module", "modules"),
                 ("function", "root_cause_functions" if name == "initial" else "recovery_functions"),

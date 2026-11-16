@@ -11,6 +11,11 @@ config/*.env
 .venv/
 data/*
 !data/build_uipath_manifest.py
+!data/build_framework_architecture.py
+!data/bootstrap_attribution.py
+!data/build_benchmark_manifests.py
+!data/build_prediction_manifest.py
+!data/compact_run_artifacts.py
 artifacts/
 *.zip
 

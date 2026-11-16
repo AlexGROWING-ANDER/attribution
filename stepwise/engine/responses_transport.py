@@ -12,7 +12,7 @@ from urllib.parse import urlsplit, urlunsplit
 def responses_endpoint(base: str) -> str:
     url = urlsplit(base.rstrip("/"))
     if url.scheme != "https" or not url.netloc or url.username or url.password or url.query or url.fragment:
-        raise ValueError("GROUND_URL must be an HTTPS endpoint without credentials or query parameters")
+        raise ValueError("Responses provider base_url must be an HTTPS endpoint without credentials or query parameters")
     path = url.path.rstrip("/")
     if path.endswith("/chat/completions"):
         path = path[:-len("/chat/completions")]

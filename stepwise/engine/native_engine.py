@@ -9,10 +9,12 @@ from stepwise_support_fast import build_prompt,assemble,PROMPT_VERSION
 from jsonschema import Draft202012Validator
 from PIL import Image
 from harness.protocol import OutputProtocol,SourceCatalog,parse_wire_json
+from harness.storage import atomic_json
+from framework_architecture import install_framework_architecture,resolve_framework_architecture,select_framework_binding
 from study.materials import EvidenceStore
 from responses_transport import forward_responses,route_request
 import platform_runtime
-MODEL='deepseek-v4.1-flash'
+DEFAULT_MODEL='deepseek-v4.1-flash'
 current_runtime=platform_runtime.current_runtime
 DERIVED_ROOT='derived_views'
 DERIVED_SCHEMA='stepwise-derived-view-v1'
@@ -30,6 +32,87 @@ class DerivedViewError(ValueError):
  pass
 
 def sha(p):return hashlib.sha256(Path(p).read_bytes()).hexdigest()
+
+def validate_framework_snapshot_tree(root,source_files):
+ expected={'snapshot.json','framework_index.json','framework_knowledge_contract.md'}|{f'source/{rel}' for rel in source_files}
+ actual=set()
+ for dirpath,dirnames,filenames in os.walk(root,followlinks=False):
+  for name in dirnames+filenames:
+   if (Path(dirpath)/name).is_symlink():raise ValueError('Framework knowledge snapshot contains a symlink')
+  for name in filenames:
+   actual.add((Path(dirpath)/name).relative_to(root).as_posix())
+ if actual!=expected:
+  raise ValueError('Framework knowledge snapshot tree mismatch: missing='+str(sorted(expected-actual))+' extra='+str(sorted(actual-expected)))
+
+def resolve_framework_knowledge(binding,base,identity):
+ """Validate an optional frozen framework source snapshot without making it case evidence."""
+ if binding is None:return None
+ if not isinstance(binding,dict) or binding.get('schema')!='framework-knowledge-binding-v1':
+  raise ValueError('Unknown framework knowledge binding schema')
+ framework=identity.get('framework')
+ if binding.get('framework')!=framework:raise ValueError('Framework knowledge target differs from case identity')
+ if binding.get('mode') not in ('hybrid','repo_only'):raise ValueError('Unsupported framework knowledge mode')
+ root=Path(binding['snapshot_root']).expanduser()
+ root=(root if root.is_absolute() else Path(base)/root).resolve()
+ snapshot_path=root/'snapshot.json';index_path=root/'framework_index.json';contract_path=root/'framework_knowledge_contract.md'
+ if not binding.get('index_sha256') or not binding.get('contract_sha256'):
+  raise ValueError('Framework knowledge binding lacks index/contract hashes')
+ for path in (snapshot_path,index_path,contract_path):
+  if not path.is_file() or not path.resolve().is_relative_to(root):raise ValueError('Framework knowledge snapshot is incomplete')
+ if hashlib.sha256(snapshot_path.read_bytes()).hexdigest()!=binding.get('snapshot_manifest_sha256'):
+  raise ValueError('Framework knowledge snapshot metadata changed')
+ snapshot=json.loads(snapshot_path.read_text(encoding='utf-8'))
+ if snapshot.get('schema')!='framework-knowledge-snapshot-v1' or snapshot.get('framework')!=framework:
+  raise ValueError('Framework knowledge snapshot identity mismatch')
+ if snapshot.get('mode')!=binding.get('mode') or snapshot.get('repo_revision')!=binding.get('repo_revision'):
+  raise ValueError('Framework knowledge binding metadata mismatch')
+ if snapshot.get('tree_sha256')!=binding.get('tree_sha256'):raise ValueError('Framework knowledge tree digest mismatch')
+ files=snapshot.get('files')
+ if not isinstance(files,dict) or not files:raise ValueError('Framework knowledge snapshot has no source files')
+ validate_framework_snapshot_tree(root,files)
+ for rel,digest in files.items():
+  path=(root/'source'/rel).resolve()
+  if not path.is_relative_to(root/'source') or not path.is_file() or sha(path)!=digest:
+   raise ValueError('Framework knowledge source changed: '+rel)
+ index=json.loads(index_path.read_text(encoding='utf-8'))
+ if index.get('schema')!='framework-source-index-v1' or index.get('framework')!=framework:
+  raise ValueError('Framework source index identity mismatch')
+ if sha(index_path)!=binding['index_sha256']:raise ValueError('Framework source index changed')
+ if sha(contract_path)!=binding['contract_sha256']:raise ValueError('Framework knowledge contract changed')
+ if index.get('tree_sha256')!=snapshot.get('tree_sha256') or index.get('repo_revision')!=snapshot.get('repo_revision') or index.get('mode')!=snapshot.get('mode'):
+  raise ValueError('Framework source index digest mismatch')
+ return {'snapshot_root':str(root),'mode':binding['mode'],'repo_revision':binding['repo_revision'],
+         'tree_sha256':binding['tree_sha256'],'source_file_count':len(files),
+         'snapshot_manifest_sha256':binding['snapshot_manifest_sha256'],
+         'index_sha256':binding['index_sha256'],'contract_sha256':binding['contract_sha256']}
+
+def install_framework_knowledge(case,workspace,out):
+ knowledge=case.get('framework_knowledge')
+ if not knowledge:return None
+ source=Path(knowledge['snapshot_root']).resolve();dest=(Path(workspace)/'.framework-knowledge').resolve()
+ if dest.exists():raise ValueError('Framework knowledge destination already exists')
+ shutil.copytree(source,dest)
+ snapshot=json.loads((dest/'snapshot.json').read_text(encoding='utf-8'))
+ if sha(dest/'framework_index.json')!=knowledge['index_sha256'] or sha(dest/'framework_knowledge_contract.md')!=knowledge['contract_sha256']:
+  raise ValueError('Installed framework knowledge index/contract changed')
+ for rel,digest in snapshot['files'].items():
+  path=(dest/'source'/rel).resolve()
+  if not path.is_relative_to(dest/'source') or not path.is_file() or sha(path)!=digest:
+   raise ValueError('Installed framework knowledge source changed: '+rel)
+ binding={**knowledge,'path':'.framework-knowledge/framework_index.json',
+          'contract_path':'.framework-knowledge/framework_knowledge_contract.md',
+          'snapshot_manifest_sha256':sha(dest/'snapshot.json'),
+          'authority':'framework implementation reference only; never current-attempt evidence'}
+ atomic_json(out/'framework_knowledge_binding.json',binding)
+ return binding
+
+
+def install_framework_inputs(case,workspace,out):
+ architecture=install_framework_architecture(case,workspace,out)
+ knowledge=None if architecture else install_framework_knowledge(case,workspace,out)
+ return knowledge,architecture
+
+
 _ALOCKS={}
 _ALOCK_G=threading.Lock()
 
@@ -251,6 +334,25 @@ def page_complete(text,normalized):
 def validator(skill):
  spec=importlib.util.spec_from_file_location('d60_result_validator',HERE/'validate_result.py');m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m);return m
 
+
+def command_read_roots(command):
+ """Allow both the invoked path and its resolved target inside the sandbox."""
+ roots=[]
+ command_paths = list(command)
+ if sys.platform.startswith("linux"):
+  sandbox_helper = shutil.which("codex-linux-sandbox")
+  if sandbox_helper:
+   command_paths.append(sandbox_helper)
+ for part in command_paths:
+  path=Path(part).expanduser()
+  if not path.is_absolute() or not path.exists():continue
+  invoked=path if path.is_dir() else path.parent
+  resolved=path.resolve()
+  target=resolved if resolved.is_dir() else resolved.parent
+  for root in (invoked,target):
+   if root not in roots:roots.append(root)
+ return roots
+
 import re as _re
 # 沙箱初始化与连接错误的分类特征；实际模型调用以调用日志为准。
 INFRA_PAT = _re.compile(r'failed to create session|native mxc is unavailable|failed to prepare fs sandbox|'
@@ -371,10 +473,12 @@ def finish(out,case,skill,protocol,raw,receipt,meta):
  atomic(out/'status.json',meta);return meta
 
 
-def run_native(case,skill,sm,protocol,store,out,wall=850,*,command,endpoint,key):
+def run_native(case,skill,sm,protocol,store,out,wall=850,*,command,endpoint,key,
+               model=DEFAULT_MODEL,model_source='stepwise',model_provider=None,reasoning_effort=None):
  out.mkdir(parents=True,exist_ok=False)
  runtime=current_runtime()
  w=out/'workspace';w.mkdir(exist_ok=True);home=out/'home';home.mkdir(exist_ok=True)
+ framework_knowledge,framework_architecture=install_framework_inputs(case,w,out)
  _sk=w/'.agents/skills/gui-trajectory-attribution'
  shutil.copytree(skill,_sk)
  for _f in (w/'.agents/skills/gui-trajectory-attribution/references').rglob('*.md'):
@@ -410,6 +514,8 @@ def run_native(case,skill,sm,protocol,store,out,wall=850,*,command,endpoint,key)
     current+=marker;members.append(fragment)
  flush()
  index={'identity':case['identity'],'available_steps':case['available_steps'],'sources':case['inventory'],'log_pages':[{'path':x['path'],'characters':len(x['text'])} for x in pages], 'images':[{'path':e['source'],'source_id':e['source_id']} for e in case['inventory'] if e['kind']=='image'],'normalization':'Original textual fields retained. In-log binary attachments outside the website gallery are replaced deterministically by the shared existing reader. Every named image has the existing q85 bytes at original dimensions.'}
+ if framework_knowledge:index['framework_knowledge']=framework_knowledge
+ if framework_architecture:index['framework_architecture']=framework_architecture
  (w/'input_index.json').write_text(json.dumps(index,ensure_ascii=False,indent=2),encoding='utf8')
  prompt=build_prompt(case,protocol,pages,w)
  (out/'prompt.txt').write_text(prompt,encoding='utf8')
@@ -435,7 +541,7 @@ def run_native(case,skill,sm,protocol,store,out,wall=850,*,command,endpoint,key)
     body=json.loads(self.rfile.read(int(self.headers['Content-Length'])))
     restorations,newimgs,newpages,derived_images,rejected_images=restore_and_audit(body,w,pages,image_paths,sources_by_id,runtime,rejected_seen)
     new_derived=[entry for entry in derived_images if entry['tool_call_id'] not in derived_seen]
-    body,route=route_request(body,MODEL);item.update(**route,image_restorations=restorations,image_rejections=rejected_images)
+    body,route=route_request(body,model);item.update(**route,image_restorations=restorations,image_rejections=rejected_images)
     # Keep hashes and a bounded public request, not duplicated base64 blobs per round.
     pub=public(body)
     def omit_images(v):
@@ -464,7 +570,7 @@ def run_native(case,skill,sm,protocol,store,out,wall=850,*,command,endpoint,key)
        item.setdefault('new_complete_pages',[]).append(page['path'])
      for e,cid in newimgs:
       if e['source'] not in viewed:
-       viewed.add(e['source']);events.append({'source':e['source'],'sha256':e['sha256'],'operation':'deliver_image','success':True,'content_complete':True,'tool_call_id':cid,'delivery_sha256':e['delivery_sha256'],'truncated':False})
+       viewed.add(e['source']);item.setdefault('delivered_gallery_sources',[]).append(e['source_id']);events.append({'source':e['source'],'sha256':e['sha256'],'operation':'deliver_image','success':True,'content_complete':True,'tool_call_id':cid,'delivery_sha256':e['delivery_sha256'],'truncated':False})
      for entry in new_derived:
       if entry['tool_call_id'] not in derived_seen:
        derived_seen.add(entry['tool_call_id']);derived_audit.append(entry)
@@ -487,21 +593,18 @@ def run_native(case,skill,sm,protocol,store,out,wall=850,*,command,endpoint,key)
  server=ThreadingHTTPServer(('127.0.0.1',0),Handler);server.daemon_threads=True;threading.Thread(target=server.serve_forever,daemon=True).start()
  env={k:v for k,v in os.environ.items() if not k.upper().startswith('CODEX_') and not any(s in k.upper() for s in ('API_KEY','TOKEN','SECRET'))};env.update(CODEX_HOME=str(home),HOME=str(home),D60_LOCAL_KEY=token)
  if runtime.is_windows():env['USERPROFILE']=str(home)
- cmd=command+['exec','--ignore-user-config','--skip-git-repo-check']+runtime.approval_args()+['--json','-C',str(w),'-m',MODEL,'-o',str(out/'answer.txt')]
+ cmd=command+['exec','--ignore-user-config','--skip-git-repo-check']+runtime.approval_args()+['--json','-C',str(w),'-m',model,'-o',str(out/'answer.txt')]
  read_roots=[Path(sys.executable).resolve().parent,Path(sys.prefix).resolve(),Path(getattr(sys,'base_prefix',sys.prefix)).resolve()] if not runtime.is_windows() else []
- if not runtime.is_windows():
-  for part in command:
-   path=Path(part).expanduser()
-   if path.is_absolute() and path.exists():
-    path=path.resolve();read_roots.append(path if path.is_dir() else path.parent)
- opts={'model_provider':'d60_company','model_providers.d60_company.name':'Company DeepSeek; explicit same-model approval surrogate','model_providers.d60_company.base_url':f'http://127.0.0.1:{server.server_port}/v1','model_providers.d60_company.env_key':'D60_LOCAL_KEY','model_providers.d60_company.wire_api':'responses','model_providers.d60_company.requires_openai_auth':False,'model_providers.d60_company.request_max_retries':1,'model_providers.d60_company.stream_max_retries':1,'model_providers.d60_company.stream_idle_timeout_ms':650000,'tool_output_token_limit':50000,'features.enable_request_compression':False,'features.skip_host_skill_discovery':True,'features.plugins':False,'features.remote_plugin':False,'features.multi_agent':False}
+ if not runtime.is_windows():read_roots.extend(command_read_roots(command))
+ opts={'model_provider':'d60_company','model_providers.d60_company.name':'Attribution recorder; explicit same-model approval surrogate','model_providers.d60_company.base_url':f'http://127.0.0.1:{server.server_port}/v1','model_providers.d60_company.env_key':'D60_LOCAL_KEY','model_providers.d60_company.wire_api':'responses','model_providers.d60_company.requires_openai_auth':False,'model_providers.d60_company.request_max_retries':1,'model_providers.d60_company.stream_max_retries':1,'model_providers.d60_company.stream_idle_timeout_ms':650000,'tool_output_token_limit':50000,'features.enable_request_compression':False,'features.skip_host_skill_discovery':True,'features.plugins':False,'features.remote_plugin':False,'features.multi_agent':False}
+ if reasoning_effort is not None:opts['model_reasoning_effort']=reasoning_effort
  runtime_dep=os.environ.get('CODEX_RUNTIME_DEP') if runtime.is_windows() else None
  opts.update(runtime.sandbox_options(w,home,runtime_dep,read_roots));opts.update(runtime.approval_options())
  def toml(v):
   if isinstance(v,dict):return '{'+','.join(json.dumps(k)+'='+toml(x) for k,x in v.items())+'}'
   return json.dumps(v,ensure_ascii=False)
  for k,v in opts.items():cmd+=['-c',k+'='+toml(v)]
- cmd+=['-'];atomic(out/'launch.json',{'argv':cmd,'family':'native_d60','platform':runtime.name,'submission_helper':runtime.helper_name,'skill_manifest_sha256':sha(skill.parent/'manifest.json'),'wall_seconds':wall,'max_calls':160,'permission_policy':'root deny with workspace and minimal runtime allow','native_instructions':True,'approval_surrogate':MODEL})
+ cmd+=['-'];atomic(out/'launch.json',{'argv':cmd,'family':'native_d60','platform':runtime.name,'submission_helper':runtime.helper_name,'skill_manifest_sha256':sha(skill.parent/'manifest.json'),'wall_seconds':wall,'max_calls':160,'permission_policy':'root deny with workspace and minimal runtime allow','native_instructions':True,'approval_surrogate':model,'model_source':model_source,'model_provider':model_provider})
  proc=subprocess.Popen(cmd,cwd=w,env=env,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,encoding='utf8',errors='replace',**runtime.popen_kwargs())
  atomic(out/'pid.json',{'pid':proc.pid,'start':time.time()});timed=False
  try:stdout,stderr=proc.communicate(prompt,timeout=max(1,deadline-time.monotonic()))
@@ -519,7 +622,7 @@ def run_native(case,skill,sm,protocol,store,out,wall=850,*,command,endpoint,key)
   failure={'case_id':case['case_id'],'state':'infra_failed' if network_interruption else 'invalid','protocol':'stepwise_fast_v2','prompt_version':PROMPT_VERSION,'validator_patch_version':'answer-delivery-direction-v1','validator_sha256':sha(HERE/'validate_result.py'),'error':terminal_error if network_interruption else 'Step assembly: '+str(exc),'assembly_error':str(exc),'returncode':proc.returncode,'timed_out':timed,'seconds':round(time.monotonic()-start,2),'post_validator_model_repair':False}
   atomic(out/'status.json',failure);return failure
  complete=len({e['source'] for e in events})==len(case['inventory'])
- meta={'case_id':case['case_id'],'family':'native_d60','platform':runtime.name,'submission_helper':runtime.helper_name,'model':MODEL,'version':sm['skill_version'],'returncode':proc.returncode,'timed_out':timed,'coverage_complete':complete,'delivered_sources':len(events),'required_sources':len(case['inventory']),'delivered_images':len(viewed),'required_images':case['image_count'],'derived_views_delivered':len(derived_audit),'completed_pages':len(page_hits),'required_pages':len(pages),'upstream_calls':sum(bool(x.get('sent_upstream')) for x in aud),'bridge_requests':len(aud),'seconds':round(time.monotonic()-start,2),'run_directory':str(out),'approval_surrogate_not_official_model':True,'protocol':'stepwise_fast_v2','prompt_version':PROMPT_VERSION,'validator_patch_version':'answer-delivery-direction-v1','validator_sha256':sha(HERE/'validate_result.py'),'post_validator_model_repair':False}
+ meta={'case_id':case['case_id'],'family':'native_d60','platform':runtime.name,'submission_helper':runtime.helper_name,'model':model,'model_source':model_source,'model_provider':model_provider,'version':sm['skill_version'],'returncode':proc.returncode,'timed_out':timed,'coverage_complete':complete,'delivered_sources':len(events),'required_sources':len(case['inventory']),'delivered_images':len(viewed),'required_images':case['image_count'],'derived_views_delivered':len(derived_audit),'completed_pages':len(page_hits),'required_pages':len(pages),'upstream_calls':sum(bool(x.get('sent_upstream')) for x in aud),'bridge_requests':len(aud),'seconds':round(time.monotonic()-start,2),'run_directory':str(out),'approval_surrogate_not_official_model':True,'protocol':'stepwise_fast_v2','prompt_version':PROMPT_VERSION,'validator_patch_version':'answer-delivery-direction-v1','validator_sha256':sha(HERE/'validate_result.py'),'post_validator_model_repair':False}
  if (proc.returncode or timed) and not raw:
   _err=(stderr[-2200:] if stderr else 'No final output')
   meta.update(state='infra_failed' if INFRA_PAT.search(_err) else 'runtime_failed',error=_err)

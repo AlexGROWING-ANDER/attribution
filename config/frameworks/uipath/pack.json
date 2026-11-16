@@ -1,0 +1,18 @@
+{
+  "schema": "framework-pack-v1",
+  "framework": "uipath",
+  "architecture": {
+    "mode": "generated",
+    "repo_env": "UIPATH_REPO",
+    "source_roots": [
+      "mm_agents/uipath"
+    ],
+    "include": [
+      "**/*.py"
+    ],
+    "exclude": [
+      "**/*_test.py",
+      "**/test_*.py"
+    ]
+  }
+}

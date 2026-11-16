@@ -1,0 +1,4 @@
+interface:
+  display_name: "Flux 原生归因批跑"
+  short_description: "准备GUI归因材料并由Flux原生任务逐步提交和校验"
+  default_prompt: "使用 $attribution-bootstrap 在Flux中执行GUI归因，无需模型配置或模型CLI"

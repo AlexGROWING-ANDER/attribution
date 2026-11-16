@@ -2,7 +2,7 @@
 
 ## 输入与职责
 
-启动Prompt提供当前任务身份及资源入口。模型原生加载归因Skill，读取材料索引、单步Schema、全局Schema和提交协议。
+启动Prompt提供当前任务身份及资源入口。模型原生加载归因Skill，读取材料索引、checkpoint Schema、单步Schema、全局Schema和提交协议。
 
 | 文件 | 用途 |
 |---|---|
@@ -21,16 +21,19 @@ macOS/Linux的Python helper还提供受控派生视图：只允许从已登记�
 
 ```text
 准备Skill与当前attempt材料
+  → 依据指令、身份和任务口径提交checkpoint计划（1—8项）
   → 完整读取图片和日志
   → 按步骤保存局部判断，检查字段、步序和来源
-  → 提交全局归因，检查补充证据是否保留原证据前缀
+  → 提交全局归因，检查required checkpoint是否原样进入goals、补充证据是否保留原证据前缀
   → 本地完成检查：步骤、文件、补充证据及引用
   → 程序组装，绑定任务身份、来源和覆盖记录
   → 最终严格校验
   → status.json：validated／invalid／runtime_failed
 ```
 
-Windows通过PowerShell调用`io.ps1`，macOS/Linux调用`io.py`传递单步小JSON，按数字顺序保存。macOS/Linux启动时会把工作区协议中的`python3`固定为执行器实际使用的Python绝对路径，避免沙箱内`PATH`落到不可用的系统解释器。两条路径执行相同的字段、步序、来源和revision前缀检查。POSIX路径额外在`global`保存和`check`通过前执行目标证据预检：`satisfied`或`unsatisfied`目标必须至少引用一个绑定到图片来源的evidence ID，仅有日志或模块自述时拒绝并提示保留`unknown`；Windows helper保持原有行为。单步记录包含`step`、`verdict`、`summary`、`evidence`；`verdict`是局部判断，不直接等于主要根因。
+Windows通过PowerShell调用`io.ps1`，macOS/Linux调用`io.py`传递JSON，按数字顺序保存。macOS/Linux启动时会把工作区协议中的`python3`固定为执行器实际使用的Python绝对路径，避免沙箱内`PATH`落到不可用的系统解释器。两条路径都要求先提交`checkpoint_plan.json`：计划只能来自原始指令、身份和任务口径，提交事件绑定文件哈希；未经该提交，step、global、check（以及POSIX derive）都会被拒绝。最终required checkpoint必须与`goals`中的`id/object/requirement`一致。该门禁不阻止直接读取原始文件，实际顺序另写入组装审计。两条路径执行相同的字段、步序、来源和revision前缀检查。POSIX路径额外在`global`保存和`check`通过前执行目标证据预检：`satisfied`或`unsatisfied`目标必须至少引用一个绑定到图片来源的evidence ID，仅有日志或模块自述时拒绝并提示保留`unknown`；Windows helper保持原有行为。单步记录包含`step`、`verdict`、`summary`、`evidence`；`verdict`是局部判断，不直接等于主要根因。
+
+checkpoint是验收覆盖脚手架，不是证据：不得写入evidence ID，不能单独证明错误，也不能直接选择层级或责任标签。任务执行中由直接证据发现的额外验收项可以继续加入`goals`。
 
 新读取的直接观察可另存为`revision_NNN.json`。原始步骤、verdict和证据前缀保持不变，补充内容追加在后。全局提交和本地完成检查均会检查这项约束，拒绝时返回具体冲突位置。
 
@@ -40,7 +43,7 @@ Windows通过PowerShell调用`io.ps1`，macOS/Linux调用`io.py`传递单步小J
 
 ## 原生Responses传输
 
-入口使用公司网关的Responses接口。本地记录器保留工具定义、消息结构、工具返回及响应事件，不转换为Chat Completions，不重建Responses事件。记录器恢复清单约定的图片字节，并将`codex-auto-review`明确路由到同一DeepSeek模型。
+入口由 Flux 原生会话或原生子任务执行推理，不启动模型 CLI，也不读取模型配置。材料通过原生文本读取和 view_image 展示；读取确认门面保存 agent 确认回执，不声称上游 HTTP 请求已被独立验证。原有 checkpoint、逐步提交、组装、引用与最终校验规则保持不变。
 
 响应按原字节流转给CLI，审计提取HTTP状态、模型名、usage及完成事件。收到完整`response.completed`后，该次请求携带的材料才记为完整送达。上游HTTP错误保留原状态码；流中途出错则关闭当前连接。请求和流重试由Codex配置控制。
 

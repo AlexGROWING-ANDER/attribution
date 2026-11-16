@@ -1,6 +1,6 @@
 {
   "registry_version": "1.10",
-  "skill_version": "0.15.2",
+  "skill_version": "0.16.0",
   "policy_id": "gui-attribution-policy-4",
   "templates": {
     "mobile_agent_v3": {

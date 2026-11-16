@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 from pathlib import Path
 import shutil
@@ -28,10 +29,11 @@ class RevisionPrecheckTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.workspace = Path(self.temp.name)
         shutil.copyfile(ROOT / "stepwise/engine/io.ps1", self.workspace / "io.ps1")
-        self.case = {"available_steps": [1], "inventory": [
+        self.case = {"case_id": "synthetic", "identity": {"id": "synthetic"}, "available_steps": [1], "inventory": [
             {"source_id": "S0001", "source": "step_1/manager.json", "kind": "log", "step": 1},
             {"source_id": "S0002", "source": "images/frame.png", "kind": "image", "step": None},
         ]}
+        self.goal = {"id": "CP1", "object": "Synthetic object", "requirement": "Synthetic requirement"}
         self.original = {"step": 1, "verdict": "uncertain", "summary": "Initial observation", "evidence": [
             {"source_id": "S0001", "phase": "decision", "locator": "response", "observation": "A log entry"},
             {"source_id": "S0002", "phase": "after_action", "locator": "full image", "observation": "页面含‘收藏’按钮"},
@@ -39,9 +41,25 @@ class RevisionPrecheckTests(unittest.TestCase):
         self.base = self.workspace / "step_judgments/step_001.json"
         self.revision = self.workspace / "step_judgments/revision_001.json"
         save(self.base, self.original)
-        save(self.workspace / "input_index.json", {"available_steps": [1], "sources": self.case["inventory"]})
-        save(self.workspace / "global_summary.schema.json", {"required": ["decision"]})
-        save(self.workspace / "global_summary.json", {"decision": "pending"})
+        save(self.workspace / "input_index.json", {
+            "identity": self.case["identity"], "available_steps": [1], "sources": self.case["inventory"],
+        })
+        save(self.workspace / "checkpoint_plan.json", {
+            "schema": "case-checkpoint-plan-v1", "case_id": "synthetic",
+            "basis": ["instruction", "identity", "task_policy"],
+            "checkpoints": [{
+                "id": "CP1", "type": "goal", "object": "Synthetic object",
+                "requirement": "Synthetic requirement", "required": True, "depends_on": [],
+                "acceptance": "Direct screenshot", "evidence_expectation": ["screenshot"],
+            }],
+        })
+        plan_sha = hashlib.sha256((self.workspace / "checkpoint_plan.json").read_bytes()).hexdigest()
+        (self.workspace / "io_events.jsonl").write_text(json.dumps({
+            "at": 1, "mode": "checkpoint", "accepted": True,
+            "detail": "Saved checkpoint plan sha256=" + plan_sha,
+        }) + "\n", encoding="utf-8")
+        save(self.workspace / "global_summary.schema.json", {"required": ["decision", "goals"]})
+        save(self.workspace / "global_summary.json", {"decision": "pending", "goals": [{**self.goal, "status": "unknown"}]})
         self.receipt = {"events": [
             {"source": entry["source"], "success": True, "content_complete": True, "truncated": False}
             for entry in self.case["inventory"]
@@ -51,9 +69,10 @@ class RevisionPrecheckTests(unittest.TestCase):
         self.temp.cleanup()
 
     def invoke(self, mode: str) -> subprocess.CompletedProcess:
+        payload = {"decision": "pending", "goals": [{**self.goal, "status": "unknown"}]}
         return subprocess.run(
             [PWSH, "-NoProfile", "-NonInteractive", "-File", str(self.workspace / "io.ps1"),
-             "-Mode", mode, "-Json", '{"decision":"pending"}'],
+             "-Mode", mode, "-Json", json.dumps(payload, ensure_ascii=False)],
             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
@@ -70,7 +89,7 @@ class RevisionPrecheckTests(unittest.TestCase):
                 self.assertEqual((self.workspace / "global_summary.json").read_bytes(), global_bytes)
         self.assertEqual(self.base.read_bytes(), original_bytes)
         events = [json.loads(line) for line in (self.workspace / "io_events.jsonl").read_text(encoding="utf-8").splitlines()]
-        self.assertTrue(all(event["accepted"] is False for event in events))
+        self.assertTrue(all(event["accepted"] is False for event in events if event["mode"] != "checkpoint"))
         with self.assertRaises(Exception):
             protocol.assemble(self.workspace, self.case, self.receipt)
 

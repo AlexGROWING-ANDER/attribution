@@ -1,0 +1,19 @@
+{
+  "schema": "framework-pack-v1",
+  "framework": "agent_s2",
+  "architecture": {
+    "mode": "generated",
+    "repo_env": "AGENT_S2_REPO",
+    "source_roots": [
+      "s2",
+      "gui_agents/s2"
+    ],
+    "include": [
+      "**/*.py"
+    ],
+    "exclude": [
+      "**/*_test.py",
+      "**/test_*.py"
+    ]
+  }
+}

@@ -1,20 +1,18 @@
-"""Portable entry for the frozen v3 native Codex per-step protocol."""
+"""Prepare and validate the frozen per-step protocol for native Flux execution."""
 from __future__ import annotations
 
 import argparse
 import hashlib
 import importlib.util
 import json
-import os
 from pathlib import Path
 import re
-import shutil
-import subprocess
 import sys
 
 ROOT = Path(__file__).resolve().parent
 REPO = ROOT.parent
 sys.dont_write_bytecode = True
+sys.path.insert(0, str(ROOT / "engine"))
 
 
 def read_json(path: Path) -> dict:
@@ -57,6 +55,25 @@ def load_engine():
     return module
 
 
+def resolve_framework_inputs(engine, manifest: dict, base: Path, identity: dict):
+    """Resolve exactly one framework reference source, preferring architecture."""
+    architecture_registry = manifest.get("framework_architecture")
+    if architecture_registry is None:
+        architecture_registry = manifest.get("framework_architectures")
+    architecture_binding = engine.select_framework_binding(
+        architecture_registry, identity["framework"]
+    )
+    architecture = engine.resolve_framework_architecture(
+        architecture_binding, base, identity
+    )
+    knowledge = None
+    if architecture is None:
+        knowledge = engine.resolve_framework_knowledge(
+            manifest.get("framework_knowledge"), base, identity
+        )
+    return knowledge, architecture
+
+
 def load_inputs(engine, manifest_path: Path, case_id: str, expected_manifest_sha256: str | None = None):
     validate_case_id(case_id)
     payload = manifest_path.read_bytes()
@@ -85,6 +102,9 @@ def load_inputs(engine, manifest_path: Path, case_id: str, expected_manifest_sha
     engine.Draft202012Validator(schema["properties"]["case"]).validate(case["identity"])
     if case["identity"]["id"] != case_id:
         raise ValueError("Case identity does not match selected case ID")
+    case["framework_knowledge"], case["framework_architecture"] = resolve_framework_inputs(
+        engine, manifest, manifest_path.parent, case["identity"]
+    )
     registry = read_json(skill / "references" / "template-registry.json")
     template = registry["templates"].get(case["identity"]["template_id"])
     if (not template or template["framework"] != case["identity"]["framework"]
@@ -124,81 +144,22 @@ def load_inputs(engine, manifest_path: Path, case_id: str, expected_manifest_sha
     return case, manifest, skill, skill_manifest, protocol, store
 
 
-def cli_command() -> list[str]:
-    configured = os.environ.get("CODEX_BINARY")
-    if configured:
-        command = json.loads(configured)
-        if not isinstance(command, list) or not command or not all(
-            isinstance(part, str) and part for part in command
-        ):
-            raise ValueError("CODEX_BINARY must be a JSON array of command arguments")
-    else:
-        if os.name == "nt":
-            node = shutil.which("node")
-            npm_root = Path(os.environ.get("APPDATA", "")) / "npm/node_modules/@openai/codex/bin/codex.js"
-            if not node or not npm_root.is_file():
-                raise ValueError("Set CODEX_BINARY, or install Node and @openai/codex@0.166.0")
-            command = [node, str(npm_root)]
-        else:
-            codex = shutil.which("codex")
-            if codex:
-                command = [codex]
-            else:
-                node, npm = shutil.which("node"), shutil.which("npm")
-                npm_root = None
-                if node and npm:
-                    try:
-                        completed_npm = subprocess.run(
-                            [npm, "root", "-g"], capture_output=True, text=True, timeout=20,
-                            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-                        )
-                        if completed_npm.returncode == 0 and completed_npm.stdout.strip():
-                            npm_root = Path(completed_npm.stdout.strip()) / "@openai/codex/bin/codex.js"
-                    except (OSError, subprocess.SubprocessError):
-                        npm_root = None
-                if not node or npm_root is None or not npm_root.is_file():
-                    raise ValueError("Set CODEX_BINARY, or install Codex CLI 0.166.0")
-                command = [node, str(npm_root)]
-    completed = subprocess.run(
-        command + ["--version"], capture_output=True, text=True, timeout=20,
-        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-    )
-    if completed.returncode or not re.fullmatch(r"(?:codex-cli|codex)\s+0\.166\.0", completed.stdout.strip()):
-        raise ValueError("This snapshot requires Codex CLI 0.166.0")
-    return command
-
-
-def credentials() -> tuple[str, str]:
-    from responses_transport import responses_endpoint
-    base = os.environ.get("GROUND_URL", "").rstrip("/")
-    key = os.environ.get("GROUND_API_KEY", "")
-    if not base.startswith("https://") or not key:
-        raise ValueError("Set GROUND_URL (HTTPS Responses endpoint) and GROUND_API_KEY")
-    return responses_endpoint(base), key
-
-
-def load_environment(path: Path | None) -> None:
-    if path is not None:
-        if not path.is_file():
-            raise ValueError("Specified environment file does not exist")
-        from dotenv import load_dotenv
-        load_dotenv(path, override=False)
-
-
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description="Prepare or finalize native Flux attribution")
     parser.add_argument("--manifest", required=True, type=Path)
-    parser.add_argument("--manifest-sha256", help="Batch-bound expected input manifest digest")
-    parser.add_argument("--release-sha256", help="Batch-bound expected runtime manifest digest")
-    parser.add_argument("--skill-manifest-sha256", help="Batch-bound expected Skill manifest digest")
+    parser.add_argument("--manifest-sha256")
+    parser.add_argument("--release-sha256")
+    parser.add_argument("--skill-manifest-sha256")
     parser.add_argument("--case", required=True)
     parser.add_argument("--out", required=True, type=Path)
-    parser.add_argument("--wall", type=int, default=3600)
-    parser.add_argument("--env-file", type=Path)
-    parser.add_argument("--preflight", action="store_true", help="No model calls or device actions")
+    parser.add_argument("--wall", type=int, default=3600, help="Native Flux task time budget")
+    parser.add_argument("--preflight", action="store_true", help="No inference or device actions")
+    parser.add_argument("--finalize", action="store_true", help="Validate completed Flux submissions")
     args = parser.parse_args()
     if args.wall <= 0:
         parser.error("--wall must be positive")
+    if args.preflight and args.finalize:
+        parser.error("--preflight and --finalize are mutually exclusive")
     verify_release()
     for expected, path in (
         (args.release_sha256, REPO / "RELEASE_MANIFEST.json"),
@@ -206,43 +167,35 @@ def main() -> int:
     ):
         if expected and sha256(path) != expected:
             raise ValueError("Runtime or Skill changed since batch dispatch")
-    load_environment(args.env_file)
     engine = load_engine()
-    platform_runtime = engine.current_runtime()
-    manifest_digest = args.manifest_sha256 or sha256(args.manifest.resolve())
-    loaded = load_inputs(engine, args.manifest.resolve(), args.case, manifest_digest)
-    command = cli_command()
-    if platform_runtime.requires_runtime_dep():
-        runtime_dep = platform_runtime.resolve_runtime_dep(os.environ.get("CODEX_RUNTIME_DEP"))
-        os.environ["CODEX_RUNTIME_DEP"] = str(runtime_dep)
-    if args.out.resolve().exists():
-        raise ValueError("Output already exists; choose a new directory to preserve prior attempts")
+    manifest_path = args.manifest.resolve()
+    manifest_digest = args.manifest_sha256 or sha256(manifest_path)
+    loaded = load_inputs(engine, manifest_path, args.case, manifest_digest)
     if args.preflight:
-        print(json.dumps({
-            "state": "preflight_passed", "case_id": args.case,
-            "platform": platform_runtime.name, "submission_helper": platform_runtime.helper_name,
-            "cli_version": "0.166.0", "skill_version": loaded[3]["skill_version"],
-            "registered_sources": len(loaded[0]["inventory"]),
-            "registered_images": loaded[0]["image_count"], "paid_calls": 0,
-        }, ensure_ascii=False))
+        print(json.dumps({"state": "preflight_passed", "case_id": args.case,
+                          "execution_backend": "flux_native",
+                          "registered_sources": len(loaded[0]["inventory"]),
+                          "registered_images": loaded[0]["image_count"],
+                          "inference_started": False}, ensure_ascii=False))
         return 0
-    if platform_runtime.name not in ("windows", "macos", "linux"):
-        raise ValueError("Native execution supports Windows, macOS, and Linux")
-    endpoint, key = credentials()
-    case, _, skill, skill_manifest, protocol, store = loaded
-    status = engine.run_native(
-        case, skill, skill_manifest, protocol, store, args.out.resolve(), args.wall, command=command, endpoint=endpoint, key=key,
-    )
-    engine.atomic(args.out.resolve() / "input_binding.json", {
-        "manifest_sha256": manifest_digest,
-        "runtime_manifest_sha256": sha256(REPO / "RELEASE_MANIFEST.json"),
-        "skill_manifest_sha256": sha256(ROOT / "skills/v3/manifest.json"),
-        "platform": platform_runtime.name,
-        "submission_helper": platform_runtime.helper_name,
-        "prompt_version": engine.PROMPT_VERSION,
-    })
+    from flux_execution import prepare_case, finalize_case, read_json as read_flux_json
+    if args.finalize:
+        binding = read_flux_json(args.out.resolve() / "input_binding.json")
+        if (binding["case_id"] != args.case or binding["manifest_sha256"] != manifest_digest
+                or Path(binding["manifest_path"]).resolve() != manifest_path):
+            raise ValueError("Finalize inputs differ from the dispatched case")
+        status = finalize_case(args.out.resolve())
+    else:
+        status = prepare_case(loaded, args.out.resolve(), {
+            "manifest_path": str(manifest_path), "manifest_sha256": manifest_digest,
+            "runtime_manifest_sha256": sha256(REPO / "RELEASE_MANIFEST.json"),
+            "skill_manifest_sha256": sha256(ROOT / "skills/v3/manifest.json"),
+            "wall_seconds": args.wall,
+        })
     print(json.dumps(status, ensure_ascii=False))
-    return 0 if status["state"] == "validated" else 1
+    if args.finalize:
+        return 0 if status["state"] == "validated" else 1
+    return 0
 
 
 if __name__ == "__main__":
