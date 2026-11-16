@@ -12,9 +12,18 @@ import shutil
 import subprocess
 import sys
 
+try:
+    import tomllib
+except ImportError:  # Python 3.10 fallback
+    try:
+        import tomli as tomllib
+    except ImportError:
+        tomllib = None
+
 ROOT = Path(__file__).resolve().parent
 REPO = ROOT.parent
 sys.dont_write_bytecode = True
+sys.path.insert(0, str(ROOT / "engine"))
 
 
 def read_json(path: Path) -> dict:
@@ -146,7 +155,44 @@ def load_inputs(engine, manifest_path: Path, case_id: str, expected_manifest_sha
     return case, manifest, skill, skill_manifest, protocol, store
 
 
-def cli_command() -> list[str]:
+DEFAULT_CODEX_VERSION = "0.166.0"
+
+
+def enforce_codex_version() -> bool:
+    value = os.environ.get("ATTRIBUTION_ENFORCE_CODEX_VERSION", "").strip().lower() or "0"
+    if value in ("0", "false", "no", "off"):
+        return False
+    if value in ("1", "true", "yes", "on"):
+        return True
+    raise ValueError("ATTRIBUTION_ENFORCE_CODEX_VERSION must be 0 or 1")
+
+
+def expected_codex_version() -> str:
+    return os.environ.get("ATTRIBUTION_CODEX_VERSION", "").strip() or DEFAULT_CODEX_VERSION
+
+
+def cli_version(command: list[str]) -> str:
+    completed = subprocess.run(
+        command + ["--version"], capture_output=True, text=True, timeout=20,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    if completed.returncode:
+        raise ValueError("Codex CLI --version failed: " + (completed.stderr or completed.stdout).strip())
+    output = completed.stdout.strip()
+    match = re.search(r"(?:codex-cli|codex)\s+(\S+)", output, re.IGNORECASE)
+    return match.group(1) if match else output
+
+
+def canonical_cli_command(command: list[str]) -> list[str]:
+    """Use the real executable path so Seatbelt need not traverse CLI symlinks."""
+    resolved = list(command)
+    executable = Path(resolved[0]).expanduser()
+    if executable.is_absolute() and executable.is_file():
+        resolved[0] = str(executable.resolve())
+    return resolved
+
+
+def resolve_cli() -> tuple[list[str], str]:
     configured = os.environ.get("CODEX_BINARY")
     if configured:
         command = json.loads(configured)
@@ -159,7 +205,7 @@ def cli_command() -> list[str]:
             node = shutil.which("node")
             npm_root = Path(os.environ.get("APPDATA", "")) / "npm/node_modules/@openai/codex/bin/codex.js"
             if not node or not npm_root.is_file():
-                raise ValueError("Set CODEX_BINARY, or install Node and @openai/codex@0.166.0")
+                raise ValueError("Set CODEX_BINARY, or install Node and @openai/codex")
             command = [node, str(npm_root)]
         else:
             codex = shutil.which("codex")
@@ -179,15 +225,17 @@ def cli_command() -> list[str]:
                     except (OSError, subprocess.SubprocessError):
                         npm_root = None
                 if not node or npm_root is None or not npm_root.is_file():
-                    raise ValueError("Set CODEX_BINARY, or install Codex CLI 0.166.0")
+                    raise ValueError("Set CODEX_BINARY, or install Codex CLI")
                 command = [node, str(npm_root)]
-    completed = subprocess.run(
-        command + ["--version"], capture_output=True, text=True, timeout=20,
-        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-    )
-    if completed.returncode or not re.fullmatch(r"(?:codex-cli|codex)\s+0\.166\.0", completed.stdout.strip()):
-        raise ValueError("This snapshot requires Codex CLI 0.166.0")
-    return command
+    command = canonical_cli_command(command)
+    detected = cli_version(command)
+    if enforce_codex_version() and detected != expected_codex_version():
+        raise ValueError("This snapshot requires Codex CLI " + expected_codex_version())
+    return command, detected
+
+
+def cli_command() -> list[str]:
+    return resolve_cli()[0]
 
 
 def credentials() -> tuple[str, str]:
@@ -197,6 +245,71 @@ def credentials() -> tuple[str, str]:
     if not base.startswith("https://") or not key:
         raise ValueError("Set GROUND_URL (HTTPS Responses endpoint) and GROUND_API_KEY")
     return responses_endpoint(base), key
+
+
+def model_source() -> str:
+    value = os.environ.get("ATTRIBUTION_MODEL_SOURCE", "").strip().lower() or "stepwise"
+    if value in ("gateway", "stepwise"):
+        return "stepwise"
+    if value == "codex":
+        return "codex"
+    raise ValueError("ATTRIBUTION_MODEL_SOURCE must be 'stepwise' (default) or 'codex'")
+
+
+def codex_config_home() -> Path:
+    configured = os.environ.get("ATTRIBUTION_CODEX_HOME") or os.environ.get("CODEX_HOME")
+    return Path(configured).expanduser().resolve() if configured else (Path.home() / ".codex").resolve()
+
+
+def resolve_model() -> dict:
+    """Resolve the recorder upstream without changing the default gateway contract."""
+    source = model_source()
+    if source == "stepwise":
+        endpoint, key = credentials()
+        model = os.environ.get("ATTRIBUTION_MODEL") or "deepseek-v4.1-flash"
+        return {
+            "source": source, "endpoint": endpoint, "key": key,
+            "model": model, "provider": None, "reasoning_effort": None,
+            "config_home": None,
+        }
+    if tomllib is None:
+        raise ValueError("ATTRIBUTION_MODEL_SOURCE=codex requires tomllib or tomli")
+    config_path = codex_config_home() / "config.toml"
+    if not config_path.is_file():
+        raise ValueError("Codex config.toml not found: " + str(config_path))
+    try:
+        config = tomllib.loads(config_path.read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError) as exc:
+        raise ValueError("Cannot read Codex config.toml: " + str(exc)) from exc
+    provider_name = config.get("model_provider")
+    providers = config.get("model_providers") or {}
+    provider = providers.get(provider_name) if isinstance(providers, dict) else None
+    if not isinstance(provider, dict):
+        raise ValueError("Codex config selects an unknown model provider: " + str(provider_name))
+    wire_api = str(provider.get("wire_api") or "responses").lower()
+    if wire_api != "responses":
+        raise ValueError("ATTRIBUTION_MODEL_SOURCE=codex requires a Responses provider, got " + wire_api)
+    base = str(provider.get("base_url") or "").strip()
+    env_key = str(provider.get("env_key") or "OPENAI_API_KEY")
+    key = os.environ.get(env_key, "")
+    if not base:
+        raise ValueError("Codex provider requires base_url: " + str(provider_name))
+    if not key:
+        raise ValueError("Codex provider environment variable is unset: " + env_key)
+    model = (os.environ.get("ATTRIBUTION_CODEX_MODEL") or config.get("model") or "").strip()
+    if not model:
+        raise ValueError("Codex config has no model; set ATTRIBUTION_CODEX_MODEL")
+    from responses_transport import responses_endpoint
+    reasoning_effort = config.get("model_reasoning_effort")
+    return {
+        "source": source,
+        "endpoint": responses_endpoint(base),
+        "key": key,
+        "model": model,
+        "provider": provider_name,
+        "reasoning_effort": reasoning_effort,
+        "config_home": str(config_path.parent),
+    }
 
 
 def load_environment(path: Path | None) -> None:
@@ -233,29 +346,34 @@ def main() -> int:
     platform_runtime = engine.current_runtime()
     manifest_digest = args.manifest_sha256 or sha256(args.manifest.resolve())
     loaded = load_inputs(engine, args.manifest.resolve(), args.case, manifest_digest)
-    command = cli_command()
+    command, detected_cli_version = resolve_cli()
     if platform_runtime.requires_runtime_dep():
         runtime_dep = platform_runtime.resolve_runtime_dep(os.environ.get("CODEX_RUNTIME_DEP"))
         os.environ["CODEX_RUNTIME_DEP"] = str(runtime_dep)
     if args.out.resolve().exists():
         raise ValueError("Output already exists; choose a new directory to preserve prior attempts")
+    selected_model_source = model_source()
     if args.preflight:
         print(json.dumps({
             "state": "preflight_passed", "case_id": args.case,
             "platform": platform_runtime.name, "submission_helper": platform_runtime.helper_name,
-            "cli_version": "0.166.0", "skill_version": loaded[3]["skill_version"],
+            "cli_version": detected_cli_version, "skill_version": loaded[3]["skill_version"],
             "registered_sources": len(loaded[0]["inventory"]),
             "registered_images": loaded[0]["image_count"],
             "framework_architecture": (loaded[0].get("framework_architecture") or {}).get("mode"),
+            "model_source": selected_model_source,
             "paid_calls": 0,
         }, ensure_ascii=False))
         return 0
     if platform_runtime.name not in ("windows", "macos", "linux"):
         raise ValueError("Native execution supports Windows, macOS, and Linux")
-    endpoint, key = credentials()
+    model = resolve_model()
     case, _, skill, skill_manifest, protocol, store = loaded
     status = engine.run_native(
-        case, skill, skill_manifest, protocol, store, args.out.resolve(), args.wall, command=command, endpoint=endpoint, key=key,
+        case, skill, skill_manifest, protocol, store, args.out.resolve(), args.wall,
+        command=command, endpoint=model["endpoint"], key=model["key"],
+        model=model["model"], model_source=model["source"],
+        model_provider=model["provider"], reasoning_effort=model["reasoning_effort"],
     )
     engine.atomic(args.out.resolve() / "input_binding.json", {
         "manifest_sha256": manifest_digest,
@@ -263,7 +381,13 @@ def main() -> int:
         "skill_manifest_sha256": sha256(ROOT / "skills/v3/manifest.json"),
         "platform": platform_runtime.name,
         "submission_helper": platform_runtime.helper_name,
+        "cli_version": detected_cli_version,
+        "codex_version_enforced": enforce_codex_version(),
         "prompt_version": engine.PROMPT_VERSION,
+        "model_source": model["source"],
+        "model": model["model"],
+        "model_provider": model["provider"],
+        "model_config_home": model["config_home"],
     })
     print(json.dumps(status, ensure_ascii=False))
     return 0 if status["state"] == "validated" else 1

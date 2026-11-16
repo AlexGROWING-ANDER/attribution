@@ -190,9 +190,132 @@ class ReleaseTests(unittest.TestCase):
                 run_case.load_environment(Path(root) / "missing.env")
 
     def test_cli_prerelease_is_not_accepted_as_pinned_release(self):
-        with patch.dict(run_case.os.environ, {"CODEX_BINARY": '["synthetic-codex"]'}), patch.object(run_case.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, stdout="codex-cli 0.166.0-beta.1\n", stderr="")):
+        with patch.dict(run_case.os.environ, {"CODEX_BINARY": '["synthetic-codex"]', "ATTRIBUTION_ENFORCE_CODEX_VERSION": "1"}), patch.object(run_case.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, stdout="codex-cli 0.166.0-beta.1\n", stderr="")):
             with self.assertRaisesRegex(ValueError, "requires Codex"):
                 run_case.cli_command()
+
+    def test_cli_version_check_is_off_by_default(self):
+        with patch.dict(run_case.os.environ, {"CODEX_BINARY": '["synthetic-codex"]'}, clear=True), patch.object(run_case.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, stdout="codex-cli 9.9.9-beta.1\n", stderr="")):
+            command, version = run_case.resolve_cli()
+        self.assertEqual(command, ["synthetic-codex"])
+        self.assertEqual(version, "9.9.9-beta.1")
+
+    def test_cli_version_can_be_pinned_by_configuration(self):
+        environment = {
+            "CODEX_BINARY": '["synthetic-codex"]',
+            "ATTRIBUTION_ENFORCE_CODEX_VERSION": "1",
+            "ATTRIBUTION_CODEX_VERSION": "9.9.9",
+        }
+        with patch.dict(run_case.os.environ, environment, clear=True), patch.object(run_case.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, stdout="codex-cli 9.9.9\n", stderr="")):
+            self.assertEqual(run_case.cli_command(), ["synthetic-codex"])
+
+    def test_cli_version_configuration_rejects_invalid_boolean(self):
+        with patch.dict(run_case.os.environ, {"ATTRIBUTION_ENFORCE_CODEX_VERSION": "maybe"}, clear=True), self.assertRaisesRegex(ValueError, "must be 0 or 1"):
+            run_case.enforce_codex_version()
+
+    def test_cli_symlink_is_resolved_before_sandbox_launch(self):
+        with tempfile.TemporaryDirectory() as root:
+            base = Path(root)
+            target = base / "target" / "codex"
+            target.parent.mkdir()
+            target.write_text("binary", encoding="utf-8")
+            link = base / "codex-link"
+            try:
+                link.symlink_to(target)
+            except OSError as exc:
+                self.skipTest("symlinks unavailable: " + str(exc))
+            with patch.dict(run_case.os.environ, {"CODEX_BINARY": json.dumps([str(link)])}, clear=True), patch.object(
+                run_case.subprocess, "run",
+                return_value=subprocess.CompletedProcess([], 0, stdout="codex-cli 9.9.9\n", stderr=""),
+            ) as run:
+                command, version = run_case.resolve_cli()
+        self.assertEqual(command, [str(target.resolve())])
+        self.assertEqual(version, "9.9.9")
+        self.assertEqual(run.call_args.args[0], [str(target.resolve()), "--version"])
+
+    def test_command_read_roots_include_symlink_and_target(self):
+        with tempfile.TemporaryDirectory() as root:
+            base = Path(root)
+            target_dir = base / "target"
+            link_dir = base / "links"
+            target_dir.mkdir()
+            link_dir.mkdir()
+            target = target_dir / "codex"
+            target.write_text("binary", encoding="utf-8")
+            link = link_dir / "codex"
+            try:
+                link.symlink_to(target)
+            except OSError as exc:
+                self.skipTest("symlinks unavailable: " + str(exc))
+            roots = ENGINE.command_read_roots([str(link), "--version"])
+        self.assertIn(link_dir, roots)
+        self.assertIn(target_dir.resolve(), roots)
+
+    def test_model_source_defaults_to_stepwise_gateway(self):
+        environment = {
+            "GROUND_URL": "https://gateway.example.test/v1",
+            "GROUND_API_KEY": "gateway-key",
+        }
+        with patch.dict(run_case.os.environ, environment, clear=True):
+            resolved = run_case.resolve_model()
+        self.assertEqual(resolved["source"], "stepwise")
+        self.assertEqual(resolved["endpoint"], "https://gateway.example.test/v1/responses")
+        self.assertEqual(resolved["model"], "deepseek-v4.1-flash")
+
+    def test_empty_model_source_uses_default(self):
+        with patch.dict(run_case.os.environ, {"ATTRIBUTION_MODEL_SOURCE": ""}, clear=True):
+            self.assertEqual(run_case.model_source(), "stepwise")
+
+    def test_model_source_can_read_codex_config(self):
+        with tempfile.TemporaryDirectory() as root:
+            home = Path(root)
+            (home / "config.toml").write_text(
+                'model = "host-model"\n'
+                'model_provider = "host_provider"\n'
+                'model_reasoning_effort = "high"\n'
+                '[model_providers.host_provider]\n'
+                'name = "Host provider"\n'
+                'base_url = "https://host.example.test/v1"\n'
+                'wire_api = "responses"\n'
+                'env_key = "HOST_PROVIDER_KEY"\n'
+                'requires_openai_auth = false\n',
+                encoding="utf-8",
+            )
+            environment = {
+                "ATTRIBUTION_MODEL_SOURCE": "codex",
+                "ATTRIBUTION_CODEX_HOME": str(home),
+                "ATTRIBUTION_CODEX_MODEL": "override-model",
+                "HOST_PROVIDER_KEY": "host-key",
+            }
+            with patch.dict(run_case.os.environ, environment, clear=True):
+                resolved = run_case.resolve_model()
+        self.assertEqual(resolved["source"], "codex")
+        self.assertEqual(resolved["endpoint"], "https://host.example.test/v1/responses")
+        self.assertEqual(resolved["model"], "override-model")
+        self.assertEqual(resolved["provider"], "host_provider")
+        self.assertEqual(resolved["reasoning_effort"], "high")
+
+    def test_codex_model_source_reports_missing_provider_key(self):
+        with tempfile.TemporaryDirectory() as root:
+            home = Path(root)
+            (home / "config.toml").write_text(
+                'model = "host-model"\n'
+                'model_provider = "host_provider"\n'
+                '[model_providers.host_provider]\n'
+                'base_url = "https://host.example.test/v1"\n'
+                'wire_api = "responses"\n'
+                'env_key = "HOST_PROVIDER_KEY"\n',
+                encoding="utf-8",
+            )
+            with patch.dict(run_case.os.environ, {
+                "ATTRIBUTION_MODEL_SOURCE": "codex",
+                "ATTRIBUTION_CODEX_HOME": str(home),
+            }, clear=True), self.assertRaisesRegex(ValueError, "HOST_PROVIDER_KEY"):
+                run_case.resolve_model()
+
+    def test_unknown_model_source_is_rejected(self):
+        with patch.dict(run_case.os.environ, {"ATTRIBUTION_MODEL_SOURCE": "unknown"}, clear=True), self.assertRaisesRegex(ValueError, "ATTRIBUTION_MODEL_SOURCE"):
+            run_case.model_source()
 
     def test_validator_cli_finds_default_references(self):
         with tempfile.TemporaryDirectory() as root:

@@ -10,7 +10,7 @@ description: "从一批 GUI 归因 cases 目录和对应框架代码仓启动可
 ## 输入边界
 
 - 必需：`cases` 路径、框架代码仓路径、新的输出目录。
-- 真实批跑必需：`config/stepwise.env` 中的 Responses 网关和密钥；bootstrap 默认读取该文件，也可用 `--env-file` 覆盖。
+- 真实批跑默认必需：`config/stepwise.env` 中的 Responses 网关和密钥；bootstrap 默认读取该文件，也可用 `--env-file` 覆盖。若设置 `ATTRIBUTION_MODEL_SOURCE=codex`，则改为复用本机 Codex `config.toml` 的 model/provider 与 `env_key`，不再要求 `GROUND_URL` 和 `GROUND_API_KEY`；该模式的 provider 必须是 `responses`。
 - 可选：framework、pack、architecture 模式、人工 overview、case 子集、jobs、wall。
 - 不读取、不复制、不展示人工 GT。只允许 benchmark adapter 读取其注册的 annotations 和 step 材料来生成模型输入。
 - cases 路径必须属于 `config/datasets/failure_attribution_benchmark.json` 注册的布局。未知布局或缺少 instruction、step、图片范围等元数据时，停止并报告缺口，不猜造 manifest。
@@ -51,7 +51,7 @@ python3 data/bootstrap_attribution.py prepare \
 
 预检失败时不要绕过；先修正 CLI、运行环境、材料路径或代码仓状态。
 
-若用户尚未配置 `.env`，先要求从 `config/stepwise.env.example` 复制并填写 `GROUND_URL`、`GROUND_API_KEY`；不要提示密钥或把它写入结果。
+默认模型源下，若用户尚未配置 `.env`，先要求从 `config/stepwise.env.example` 复制并填写 `GROUND_URL`、`GROUND_API_KEY`。用户也可以显式选择 `ATTRIBUTION_MODEL_SOURCE=codex` 复用其 Codex 配置。不要提示密钥或把它写入结果。
 
 ### 3. 启动批跑
 

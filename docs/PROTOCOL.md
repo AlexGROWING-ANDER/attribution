@@ -43,7 +43,7 @@ checkpoint是验收覆盖脚手架，不是证据：不得写入evidence ID，�
 
 ## 原生Responses传输
 
-入口使用公司网关的Responses接口。本地记录器保留工具定义、消息结构、工具返回及响应事件，不转换为Chat Completions，不重建Responses事件。记录器恢复清单约定的图片字节，并将`codex-auto-review`明确路由到同一DeepSeek模型。
+入口使用`GROUND_URL`指向的Responses接口，或在`ATTRIBUTION_MODEL_SOURCE=codex`时使用本机Codex配置中的model/provider。本地记录器保留工具定义、消息结构、工具返回及响应事件，不转换为Chat Completions，不重建Responses事件。记录器恢复清单约定的图片字节，并将`codex-auto-review`明确路由到同一模型。
 
 响应按原字节流转给CLI，审计提取HTTP状态、模型名、usage及完成事件。收到完整`response.completed`后，该次请求携带的材料才记为完整送达。上游HTTP错误保留原状态码；流中途出错则关闭当前连接。请求和流重试由Codex配置控制。
 

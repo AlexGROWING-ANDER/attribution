@@ -8,8 +8,8 @@
 ## 1. 准备环境
 
 - Python 3.10+
-- Codex CLI 0.166.0
-- `config/stepwise.env` 中的 Responses 网关和密钥
+- Codex CLI（基准 0.166.0；版本硬校验默认关闭）
+- 默认模型源所需的环境配置：`config/stepwise.env` 中的 Responses 网关和密钥；或 `ATTRIBUTION_MODEL_SOURCE=codex`
 - macOS、Linux 或 Windows 对应的运行时依赖
 
 先创建运行配置：
@@ -18,18 +18,36 @@
 cp config/stepwise.env.example config/stepwise.env
 ```
 
-必填：
+默认 `ATTRIBUTION_MODEL_SOURCE=stepwise`，此时必填：
 
 - `GROUND_URL`：HTTPS Responses 网关地址，或完整的 `/v1/responses` 地址。
 - `GROUND_API_KEY`：对应网关密钥。
 
-按需填写 `CODEX_BINARY` 和 `CODEX_RUNTIME_DEP`。`config/stepwise.env` 已被 Git 忽略，不要提交真实密钥。`inspect` 不需要该文件；`prepare` 不强制读取；`prepare --preflight` 和真实 `run` 需要它。bootstrap 在未传 `--env-file` 时默认使用 `config/stepwise.env`。
+也可以设置 `ATTRIBUTION_MODEL_SOURCE=codex`，直接复用本机 Codex 的 `config.toml`：
+
+- 读取当前 `model`、`model_provider`，以及该 provider 的 `base_url`、`wire_api` 和 `env_key`。
+- 只支持 `wire_api = "responses"`；密钥由 `env_key` 指定的环境变量提供。
+- 此时不需要 `GROUND_URL` 和 `GROUND_API_KEY`，但仍通过本地记录器转发，保留送达回执和审计。
+- `ATTRIBUTION_CODEX_HOME` 可覆盖 Codex 配置目录；`ATTRIBUTION_CODEX_MODEL` 可覆盖模型名。
+
+不设置 `ATTRIBUTION_MODEL_SOURCE` 时保持原有 `stepwise` 行为。
+
+Codex CLI 版本门禁默认关闭，入口只记录实际版本。需要严格匹配时设置：
+
+```bash
+ATTRIBUTION_ENFORCE_CODEX_VERSION=1
+ATTRIBUTION_CODEX_VERSION=0.166.0
+```
+
+未开启门禁时，其他版本会继续运行，但工具/事件格式兼容性仍需自行验证。
+
+按需填写 `CODEX_BINARY` 和 `CODEX_RUNTIME_DEP`。Codex可执行路径中的符号链接会在启动前解析为真实文件，避免macOS Seatbelt在root-deny配置下无法重新exec自身。`config/stepwise.env` 已被 Git 忽略，不要提交真实密钥。`inspect` 不需要该文件；`prepare` 和 `prepare --preflight` 不调用模型；真实 `run` 需要所选模型源可用。bootstrap 在未传 `--env-file` 时默认使用 `config/stepwise.env`。
 
 如果还没配置其他环境，先按 `README.md` 的“安装与配置”完成。
 
 ## 2. 运行边界：启动器在沙箱外，case 在沙箱内
 
-`run_case.py` 会在宿主进程内启动一个只绑定 `127.0.0.1` 的本地 Responses 记录器，用它接收 Codex CLI 的请求、原样转发到 `GROUND_URL`，并生成送达回执和请求审计。因此启动 `run_batch.py` 的进程必须同时具备：
+`run_case.py` 会在宿主进程内启动一个只绑定 `127.0.0.1` 的本地 Responses 记录器，用它接收 Codex CLI 的请求、原样转发到 `GROUND_URL` 或 Codex 配置中的 provider，并生成送达回执和请求审计。因此启动 `run_batch.py` 的进程必须同时具备：
 
 - 绑定本机回环端口的能力；
 - 访问 `GROUND_URL` 的出站 HTTPS 和 DNS 能力。

@@ -2,7 +2,7 @@
 
 使用Codex CLI原生加载归因Skill，先依据任务建立并提交任务级checkpoint计划，再完整读取GUI任务的日志和网站图库、按Step保存局部判断，最后提交全局归因，由程序组装并校验最终结果。checkpoint只固定验收覆盖，不是证据，也不直接决定归因标签。支持Windows、macOS和Linux；Windows使用PowerShell提交helper，macOS/Linux使用Python提交helper。
 
-版本：**Codex CLI 0.166.0**。
+基准版本：**Codex CLI 0.166.0**。入口默认只记录实际版本，不启用硬性门禁；设置 `ATTRIBUTION_ENFORCE_CODEX_VERSION=1` 后才会强制精确匹配，匹配版本可用 `ATTRIBUTION_CODEX_VERSION` 覆盖。
 
 框架实现差异由外部 `framework pack` 和可校验的 architecture artifact 提供，不写死在归因代码或 Skill 中。architecture 可以由固定 revision 的源码仓静态生成，也可以由人工概览生成；两种模式使用同一套 artifact、安装和校验契约。标签体系、L1／L2／L3 与责任维度仍由评测配置定义，不由源码自动推断。运行器接收整理后的材料清单；接入其他框架时需核对当前 attempt、日志步骤映射和网站图库范围。
 
@@ -12,7 +12,7 @@ Skill负责分析方法，启动Prompt提供任务与资源入口，提交协议
 
 ```text
 有界批跑器（默认8路，最多16路）
-  → 每条案例独立启动 Codex CLI 0.166.0
+  → 每条案例独立启动 Codex CLI（基准 0.166.0）
   → 原生加载Skill，使用原生exec_command／view_image读取材料
   → 本地送达记录器：原生Responses请求／响应透传
   → 公司网关 /responses：deepseek-v4.1-flash
@@ -26,7 +26,9 @@ Skill负责分析方法，启动Prompt提供任务与资源入口，提交协议
 
 操作者或Code Agent拿到一批cases路径和对应框架代码仓路径后，先用bootstrap做布局识别、manifest生成、architecture绑定和可选预检，再启动批跑。完整说明见[Skill使用说明](docs/SKILL_USAGE.md)，操作者侧流程见[attribution-bootstrap](stepwise/skills/operator/attribution-bootstrap/SKILL.md)。
 
-真实运行前先准备`config/stepwise.env`：从`config/stepwise.env.example`复制，填写`GROUND_URL`和`GROUND_API_KEY`；bootstrap未传`--env-file`时默认使用该文件。`inspect`不读取它，`prepare --preflight`和`run`需要它。
+真实运行默认使用 `stepwise` 模型源：从`config/stepwise.env.example`复制为`config/stepwise.env`，填写`GROUND_URL`和`GROUND_API_KEY`；bootstrap未传`--env-file`时默认使用该文件。`inspect`不读取它，`prepare`不强制读取它，真实`run`需要它。
+
+也可以设置 `ATTRIBUTION_MODEL_SOURCE=codex`，从本机 Codex 的 `config.toml` 读取当前 `model`、`model_provider` 及其 `base_url`／`env_key`，不再要求 `GROUND_URL` 和 `GROUND_API_KEY`。该模式仍经过本地记录器，因此保留送达回执和请求审计；`ATTRIBUTION_CODEX_HOME` 可覆盖 Codex 配置目录，`ATTRIBUTION_CODEX_MODEL` 可覆盖模型名。不设置该变量时默认仍为 `stepwise`。
 
 ```bash
 python3 data/bootstrap_attribution.py inspect --cases /path/to/cases --code /path/to/framework-repo
@@ -97,7 +99,7 @@ RELEASE_MANIFEST.json           导出运行文件的SHA256
 
 ## 安装与配置
 
-要求Python 3.10+、Node、Codex CLI **0.166.0**。入口检查CLI版本。Windows使用MXC沙箱和PowerShell运行时；macOS使用Seatbelt；Linux使用bubblewrap（需要预先安装）。
+要求Python 3.10+、Node、Codex CLI（基准 **0.166.0**）。入口读取并记录实际CLI版本；默认不因版本不同而阻断。需要严格复现时设置 `ATTRIBUTION_ENFORCE_CODEX_VERSION=1`，并用 `ATTRIBUTION_CODEX_VERSION` 指定要求版本。Windows使用MXC沙箱和PowerShell运行时；macOS使用Seatbelt；Linux使用bubblewrap（需要预先安装）。
 
 ```powershell
 npm install -g @openai/codex@0.166.0
@@ -107,7 +109,7 @@ Copy-Item config/stepwise.env.example config/stepwise.env
 
 macOS/Linux把最后一行换成 `cp config/stepwise.env.example config/stepwise.env`，并把 `python` 换成 `python3`。
 
-在本地 `config/stepwise.env` 填写公司HTTPS Responses接口地址和密钥，该文件已被Git忽略。可填网关基础地址 `https://<gateway>/v1` 或完整 `/v1/responses`。网关必须支持当前模型的原生Responses流和工具调用。可选设置 `CODEX_BINARY`（JSON参数数组）。Windows可设置 `CODEX_RUNTIME_DEP` 指向Codex PowerShell运行时目录；macOS/Linux不需要该运行时。
+在本地 `config/stepwise.env` 填写公司HTTPS Responses接口地址和密钥，该文件已被Git忽略。可填网关基础地址 `https://<gateway>/v1` 或完整 `/v1/responses`。网关必须支持当前模型的原生Responses流和工具调用。若希望直接复用本机 Codex 当前配置，设置 `ATTRIBUTION_MODEL_SOURCE=codex`；它要求所选 provider 使用 `wire_api = "responses"`，并以 `env_key` 指定的环境变量提供密钥。可选设置 `CODEX_BINARY`（JSON参数数组）。Windows可设置 `CODEX_RUNTIME_DEP` 指向Codex PowerShell运行时目录；macOS/Linux不需要该运行时。
 
 ## 输入材料
 
