@@ -91,6 +91,22 @@ class ReleaseTests(unittest.TestCase):
         for relative, expected in manifest["files"].items():
             self.assertEqual(run_case.sha256(base / "gui-trajectory-attribution" / relative), expected)
 
+    def test_template_registry_rejects_taxonomy_drift(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            skill_root = Path(temporary) / "v3"
+            references = skill_root / "gui-trajectory-attribution" / "references"
+            save(references / "taxonomies" / "sample.json", {"zh": {}})
+            save(references / "template-registry.json", {
+                "templates": {
+                    "sample": {
+                        "taxonomy_path": "taxonomies/sample.json",
+                        "sha256": "0" * 64,
+                    }
+                }
+            })
+            with self.assertRaisesRegex(ValueError, "Template registry taxonomy changed: sample"):
+                run_case.verify_template_registry(skill_root)
+
     def test_bundled_validator_matches_engine_logic(self):
         engine = (ROOT / "stepwise/engine/validate_result.py").read_text(encoding="utf-8")
         bundled = (ROOT / "stepwise/skills/v3/gui-trajectory-attribution/scripts/validate_result.py").read_text(encoding="utf-8")

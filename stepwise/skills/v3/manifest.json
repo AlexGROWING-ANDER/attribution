@@ -15,7 +15,7 @@
     "references/submission-review.md": "6135de1e88277fbdc81101d5f7b792ea9386b70cd5712e73656a63227606241d",
     "references/checkpoint-plan.md": "1af44014e14855b3ef8df679bcca5b933325d94d93d2ea12b7818e49da1bd7f4",
     "references/task-policy.json": "9ebac70cca3d62a3ace44cccfb443d76845d7a4e801be9a28ae512609274f080",
-    "references/template-registry.json": "f8608924a2f34ebe522b7b5f27c3a4996e0091c9efa691d21b55a172f99e5fb1",
+    "references/template-registry.json": "9d857ea595578a506cf7ce76955ac309bd8a1f3cb1856f4a85dba9eee76227c8",
     "scripts/validate_result.py": "422cc5dc06ef390090dca563f74054f68284dec8ba1a7855353d90d81b7aee8b",
     "references/taxonomies/agent_s2_initial_recovery.json": "b92fcfd57d8d2fee012a3e4208ca961d869ad4c0f20377e743b192b5efcf408a",
     "references/taxonomies/mobile_agent_v3.json": "52bdac4be3c2dbf99137e54f76279fa41624f75446f0150e709b589d5acba7bd",

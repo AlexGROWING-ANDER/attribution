@@ -29,7 +29,7 @@
       "version": "1.1",
       "trial": false,
       "taxonomy_path": "taxonomies/uipath.json",
-      "sha256": "9eb4531f0567267520a551892777fccb095027c3024a7394bd525c7f6ee366cb",
+      "sha256": "40d0578c097a0eb182abda57a5e5c689ac0868f36f38b56f0595f9e28e10916a",
       "source": "agentFailureReasonCategorization/frameworks/uipath/taxonomy.json",
       "source_sha256": "a886f8dc385aab2606cf725d5f76ae0237579fd6e3c619df55fe1a77f8ec5cea"
     }

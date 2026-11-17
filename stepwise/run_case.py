@@ -44,6 +44,20 @@ def verify_release() -> None:
         path = resolve_path(relative, REPO)
         if not path.is_relative_to(REPO) or sha256(path) != expected:
             raise ValueError(f"Release file changed: {relative}")
+    verify_template_registry()
+
+
+def verify_template_registry(skill_root: Path | None = None) -> None:
+    """Check that every registry template points at its declared frozen taxonomy."""
+    base = (skill_root or ROOT / "skills" / "v3").resolve()
+    references = (base / "gui-trajectory-attribution" / "references").resolve()
+    registry = read_json(references / "template-registry.json")
+    for template_id, template in registry["templates"].items():
+        taxonomy = resolve_path(template["taxonomy_path"], references)
+        if not taxonomy.is_relative_to(references):
+            raise ValueError(f"Template taxonomy escapes references: {template_id}")
+        if not taxonomy.is_file() or sha256(taxonomy) != template["sha256"]:
+            raise ValueError(f"Template registry taxonomy changed: {template_id}")
 
 
 def load_engine():
