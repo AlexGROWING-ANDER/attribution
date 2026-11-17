@@ -17,10 +17,7 @@
         "decision": {
           "enum": [
             "success",
-            "fail",
-            "rerun",
-            "precondition_blocked",
-            "pending"
+            "fail"
           ]
         },
         "basis": {

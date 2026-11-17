@@ -18,6 +18,7 @@ import uuid
 
 import native_engine as engine
 from harness.storage import atomic_json
+from reasoning_chain import write_reasoning_chain
 
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "stepwise"))
@@ -353,7 +354,21 @@ def finalize_case(out):
         session, loaded = validate_session(out)
         case, _, skill, _, protocol, _ = loaded
         prior = read_json(out / "status.json")
+
+        def capture_reasoning():
+            if (out / "reasoning_chain.meta.json").is_file():
+                return
+            try:
+                write_reasoning_chain(
+                    out, module="gui-trajectory-attribution", model=prior.get("model"),
+                    discover_attempt=True, write_empty=False,
+                )
+            except Exception as exc:
+                atomic_json(out / "reasoning_chain_error.json", {
+                    "error": type(exc).__name__ + ": " + str(exc)[:1000],
+                })
         if prior.get("state") in ("validated", "invalid", "runtime_failed", "infra_failed"):
+            capture_reasoning()
             return prior
         workspace = out / "workspace"
         io = load_helper(workspace)
@@ -362,6 +377,7 @@ def finalize_case(out):
         if not any(e.get("mode") == "check" and e.get("accepted") is True for e in events):
             return {"case_id": case["case_id"], "state": "ready_for_flux",
                     "reason": "Native Flux task has not completed the local submission check"}
+        capture_reasoning()
         receipt = delivery_receipt(out, session, loaded)
         atomic_json(out / "access_receipt.json", receipt)
         complete = sum(e["content_complete"] for e in receipt["events"]) == len(case["inventory"])
@@ -380,6 +396,8 @@ def finalize_case(out):
             prediction = engine.assemble(workspace, case, receipt)
         except Exception as exc:
             meta.update(state="invalid", error="Step assembly: " + str(exc))
+            engine.write_best_effort_result(out, case, protocol, receipt, meta["state"], meta["error"])
+            engine.write_attribution_result(out, case, meta["state"], [meta["error"]])
             atomic_json(out / "status.json", meta)
             return meta
         return engine.finish(out, case, skill, protocol, json.dumps(prediction, ensure_ascii=False), receipt, meta,

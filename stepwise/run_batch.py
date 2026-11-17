@@ -14,6 +14,7 @@ import time
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT / "engine"))
 from harness.storage import atomic_json
+import attribution_output
 from run_case import validate_case_id, verify_release, sha256
 
 FINAL_STATES = frozenset({
@@ -215,7 +216,10 @@ def repair_hints(errors: list[str]) -> list[str]:
         hints.append("按框架源码重新核对 candidate 的 stage 与 actor 责任边界，不要按直觉分配模块。")
     if ("contamination" in text or "affected baseline" in text
             or "targeted reset" in text):
-        hints.append("contamination 与 decision 必须一致；确认污染时，给出 targeted reset 要求，并将受影响 baseline 设为 rerun/pending/precondition_blocked。")
+        hints.append("contamination 只记录受影响 baseline 的状态、影响和 targeted reset；不要据此选择 decision。decision 仅按任务是否完成填写 success/fail。")
+    if ("success decision" in text or "decision conflicts" in text
+            or "decision needs success completion" in text):
+        hints.append("decision 仅有 success/fail：只有 completion=success、全部 goals satisfied 且 coverage.scan_complete=true 时填 success；其他情况填 fail，并把缺口写入 completion、coverage 或 limitations。")
     if ("lacks complete runtime" in text or "complete review lacks" in text
             or "claimed image review absent" in text):
         hints.append("coverage 中的 scan_complete、screenshots_viewed 和 log_steps_read 必须与实际完整送达记录一致；未完整读取就不要声明完成。")
@@ -336,6 +340,15 @@ def main() -> int:
             return {"case_id": case_id, "state": "not_dispatched", "attempts_used": 0}
         record.update(attempt=directory.name, attempt_path=str(directory),
                       attempt_index=index, attempts_used=index)
+        record["attribution_summary"] = attribution_output.compact_summary(
+            attribution_output.read_attribution(
+                directory,
+                case_id=case_id,
+                state=record.get("state"),
+                validation_errors=record.get("validation_errors"),
+                schema_errors=record.get("schema_errors"),
+            )
+        )
         if record["state"] == "pending":
             record = {**record, "state": "runtime_failed", "last_state": "pending",
                       "error": record.get("error") or "Attempt preparation did not finish",
@@ -443,6 +456,30 @@ def main() -> int:
                 "attempts_remaining": args.max_attempts - used}
 
     def save() -> None:
+        def attribution_rows():
+            rows = []
+            for case_id in scope:
+                paths = attempt_paths(case_root(case_id))
+                if not paths:
+                    rows.append((case_id, results.get(case_id, {})))
+                    continue
+                for directory in paths:
+                    try:
+                        status = read_json(directory / "status.json")
+                    except (OSError, ValueError):
+                        status = {}
+                    if not isinstance(status, dict):
+                        status = {}
+                    rows.append((case_id, {
+                        "case_id": case_id,
+                        "attempt": directory.name,
+                        "attempt_path": str(directory),
+                        "state": status.get("state"),
+                        "validation_errors": status.get("validation_errors"),
+                        "schema_errors": status.get("schema_errors"),
+                    }))
+            return rows
+
         states = {}
         for record in results.values():
             state = record["state"]
@@ -473,6 +510,8 @@ def main() -> int:
             "post_validator_repair": True,
             "repair_mode": "fresh_attempt_with_validation_feedback",
         })
+        atomic_json(output / "attribution_results.json",
+                    attribution_output.batch_attribution_results(attribution_rows()))
         tasks = []
         for case_id in scope:
             record = results.get(case_id, {})

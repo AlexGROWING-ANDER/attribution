@@ -32,7 +32,7 @@ macOS/Linux的Python helper还提供受控派生视图：只允许从已登记�
   → 重试预算耗尽才记录 unresolved_after_retries
 ```
 
-Windows通过PowerShell调用`io.ps1`，macOS/Linux调用`io.py`传递JSON，按数字顺序保存。macOS/Linux启动时会把工作区协议中的`python3`固定为执行器实际使用的Python绝对路径，避免沙箱内`PATH`落到不可用的系统解释器。两条路径都要求先提交`checkpoint_plan.json`：计划只能来自原始指令、身份和任务口径，提交事件绑定文件哈希；未经该提交，step、global、check（以及POSIX derive）都会被拒绝。最终required checkpoint必须与`goals`中的`id/object/requirement`一致。该门禁不阻止直接读取原始文件，实际顺序另写入组装审计。两条路径执行相同的字段、步序、来源和revision前缀检查，并在`global`与`check`再次执行严格JSON Schema校验。POSIX的`check`还会根据confirmed delivery ticket重建运行期receipt，复用canonical assembler和最终`validate_result`执行本地严格语义预检；未送达的图库图片、标签层级冲突、actor/stage冲突及contamination/decision冲突都会在本地被拒绝。Windows helper同步拦截schema额外字段、未送达图库图片和未知引用，完整语义校验仍由最终化阶段执行。`satisfied`或`unsatisfied`目标必须至少引用一个绑定到图片来源的evidence ID，仅有日志或模块自述时拒绝并提示保留`unknown`。单步记录包含`step`、`verdict`、`summary`、`evidence`；`verdict`是局部判断，不直接等于主要根因。
+Windows通过PowerShell调用`io.ps1`，macOS/Linux调用`io.py`传递JSON，按数字顺序保存。macOS/Linux启动时会把工作区协议中的`python3`固定为执行器实际使用的Python绝对路径，避免沙箱内`PATH`落到不可用的系统解释器。两条路径都要求先提交`checkpoint_plan.json`：计划只能来自原始指令、身份和任务口径，提交事件绑定文件哈希；未经该提交，step、global、check（以及POSIX derive）都会被拒绝。最终required checkpoint必须与`goals`中的`id/object/requirement`一致。该门禁不阻止直接读取原始文件，实际顺序另写入组装审计。两条路径执行相同的字段、步序、来源和revision前缀检查，并在`global`与`check`再次执行严格JSON Schema校验。POSIX的`check`还会根据confirmed delivery ticket重建运行期receipt，复用canonical assembler和最终`validate_result`执行本地严格语义预检；未送达的图库图片、标签层级冲突、actor/stage冲突以及完成状态与二值decision不一致都会在本地被拒绝。Windows helper同步拦截schema额外字段、未送达图库图片和未知引用，完整语义校验仍由最终化阶段执行。`satisfied`或`unsatisfied`目标必须至少引用一个绑定到图片来源的evidence ID，仅有日志或模块自述时拒绝并提示保留`unknown`。单步记录包含`step`、`verdict`、`summary`、`evidence`；`verdict`是局部判断，不直接等于主要根因。
 
 checkpoint是验收覆盖脚手架，不是证据：不得写入evidence ID，不能单独证明错误，也不能直接选择层级或责任标签。任务执行中由直接证据发现的额外验收项可以继续加入`goals`。
 
@@ -41,6 +41,19 @@ checkpoint是验收覆盖脚手架，不是证据：不得写入evidence ID，�
 模型不覆盖已保存的基础步骤。局部拒绝保留记录，纠正预算按提交协议执行。最终严格校验由调用方执行；若仍失败，`run_batch` 不把第一次 invalid 当作最终交付，而是保留原 attempt，创建下一条 `attempt_NN`，把具体 schema/validation 错误写入 `retry_context.json` 后重新派发。默认总共最多 3 个全新 attempt；只有预算耗尽才记录 `unresolved_after_retries`，且旧 attempt 不被覆盖。绑定/状态损坏和启动前失败也计为一次 attempt，不能无限复用同一失败目录；`--finalize` 仅在全量 `validated` 时返回 0。
 
 分片合法不等于整体结果合法；最终检查还会核对引用、责任模块、标签、恢复机会、目标和处置的一致性。`validated`表示程序检查通过，归因准确率需另与人工GT比较。
+
+## 推理链路归档
+
+每次attempt可将模型运行时实际发出的reasoning事件归档到`reasoning_chain.jsonl`，同时生成便于阅读的`reasoning_chain.md`和`reasoning_chain.meta.json`。`reasoning_chain.jsonl`只按实际事件顺序保存文本及来源行号，不补写、不合并模型没有发出的隐藏推理；Codex同时写入`event_msg`和`response_item`的同一reasoning条目会按event ID去重。`attribution_result.json.reasoning_chain`只保存归档文件索引和计数。
+
+旧CLI执行器在写出`stdout.jsonl`后自动归档。Flux原生任务在`finalize`时按attempt路径查找对应subagent session并自动归档；若平台未落盘session，可在拿到session JSONL或thread ID后补执行：
+
+```bash
+python3 stepwise/engine/reasoning_chain.py --attempt ATTEMPT_DIR \
+  --discover-attempt --module gui-trajectory-attribution
+```
+
+没有可用reasoning事件时仍写出空JSONL和meta，并将`available`记为false；这表示运行时未暴露该内容，不能从最终回答或归因摘要反推成“完整思维链”。
 
 ## 原生Responses传输
 

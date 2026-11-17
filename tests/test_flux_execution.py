@@ -136,7 +136,9 @@ class FluxExecutionTests(unittest.TestCase):
             flux.validate_session(self.out)
 
     def test_finalize_does_not_validate_an_unfinished_task(self):
-        with patch.object(flux.engine, "finish", side_effect=AssertionError("must not validate")):
+        with patch.object(flux.engine, "finish", side_effect=AssertionError("must not validate")), \
+                patch.object(flux, "write_reasoning_chain",
+                             side_effect=AssertionError("must not capture a partial transcript")):
             self.assertEqual(flux.finalize_case(self.out)["state"], "ready_for_flux")
         self.assertFalse((self.out / "result.json").exists())
 
@@ -149,6 +151,60 @@ class FluxExecutionTests(unittest.TestCase):
                 patch.object(flux.engine, "finish", return_value={"state": "validated"}) as finish:
             flux.finalize_case(self.out)
         self.assertEqual(finish.call_args.kwargs["evidence_root"], (self.out / "workspace").resolve())
+
+    def test_assembly_failure_still_persists_the_attribution_result(self):
+        self.checkpoint()
+        events = self.out / "workspace/io_events.jsonl"
+        with events.open("a", encoding="utf-8") as stream:
+            stream.write(json.dumps({"mode": "check", "accepted": True}) + "\n")
+        (self.out / "workspace/global_summary.json").write_text(json.dumps({
+            "outcome": {"decision": "fail", "completion": "partial",
+                        "basis": "Synthetic failure", "evidence_ids": ["E01_1"]},
+            "contamination": {"status": "not_observed", "evidence_ids": [],
+                              "impact": "none", "provenance": "synthetic",
+                              "reset_requirements": []},
+            "preconditions": [],
+            "error_candidates": [],
+            "goals": [{"id": "CP1", "object": "fixture", "requirement": "Inspect fixture",
+                       "status": "unsatisfied", "first_seen_step": 1,
+                       "baseline_state": "Synthetic fixture present",
+                       "this_attempt_actions": ["Inspect fixture"],
+                       "evidence_ids": ["E01_1"]}],
+            "attribution": {
+                "initial": {"cause_id": "C1", "step": 1, "responsible_actor": "worker",
+                            "stage": "verification",
+                            "labels": {"l1": "framework", "l2": "worker",
+                                       "l3": "no_goal_state_verification",
+                                       "module": None, "function": None,
+                                       "mechanism": None, "object": None},
+                            "mapping_status": "exact",
+                            "explanation": "Synthetic retained cause.",
+                            "evidence_ids": ["E01_1"], "alternatives": []},
+                "recovery": None, "primary_selection": "C1", "secondary_causes": [],
+                "absence_reason": None, "recovery_independence": None,
+            },
+            "synthesis": {"summary": "Synthetic invalid result retained."},
+            "recovery_opportunity": {"exists": "no", "step": None, "evidence_ids": [],
+                                     "attempted": "not_applicable",
+                                     "outcome": "not_applicable",
+                                     "reason": "Synthetic fixture"},
+            "template_gaps": [], "limitations": [],
+        }), encoding="utf-8")
+        with patch.object(flux.engine, "assemble", side_effect=ValueError("Undelivered evidence source")):
+            status = flux.finalize_case(self.out)
+        self.assertEqual(status["state"], "invalid")
+        output = flux.read_json(self.out / "attribution_result.json")
+        self.assertEqual(output["result_source"], "result")
+        self.assertEqual(output["outcome"]["decision"], "fail")
+        self.assertEqual(output["attribution"]["initial"]["labels"]["l3"], "no_goal_state_verification")
+        self.assertFalse(output["validation_passed"])
+        result = flux.read_json(self.out / "result.json")
+        self.assertEqual(result["outcome"]["decision"], "fail")
+        self.assertEqual(result["attribution"]["initial"]["labels"]["l1"], "framework")
+        self.assertEqual(result["attribution"]["initial"]["labels"]["l2"], "worker")
+        self.assertEqual(result["attribution"]["initial"]["labels"]["l3"], "no_goal_state_verification")
+        provenance = flux.read_json(self.out / "result_provenance.json")
+        self.assertFalse(provenance["validation_passed"])
 
     def test_new_entry_never_resolves_a_model_or_launches_a_model_process(self):
         args = ["run_case.py", "--manifest", str(self.fixture.path), "--case", "synthetic",

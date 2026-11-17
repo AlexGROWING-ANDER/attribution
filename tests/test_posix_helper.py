@@ -83,7 +83,7 @@ class PythonRevisionPrecheckTests(unittest.TestCase):
 
     def global_payload(self, status="unknown", evidence_ids=None) -> dict:
         goal = {**self.goal, "status": status, "evidence_ids": evidence_ids or []}
-        return {"decision": "pending", "goals": [goal]}
+        return {"decision": "fail", "goals": [goal]}
 
     def assert_rejected(self, revised: dict, message: str) -> None:
         save(self.revision, revised)
@@ -336,7 +336,7 @@ class PythonStrictGateTests(unittest.TestCase):
             "type": "object", "additionalProperties": False,
             "required": ["decision", "goals"],
             "properties": {
-                "decision": {"enum": ["pending"]},
+                "decision": {"enum": ["success", "fail"]},
                 "goals": {"type": "array", "items": {
                     "type": "object", "additionalProperties": False,
                     "required": ["id", "object", "requirement", "status"],
@@ -355,7 +355,7 @@ class PythonStrictGateTests(unittest.TestCase):
         self.temp.cleanup()
 
     def global_payload(self):
-        return {"decision": "pending", "goals": [{
+        return {"decision": "fail", "goals": [{
             "id": "CP1", "object": "Synthetic object",
             "requirement": "Synthetic requirement", "status": "unknown",
         }]}
@@ -391,7 +391,7 @@ class PythonStrictGateTests(unittest.TestCase):
 
         module.write_text(
             "def assert_gallery_delivered(workspace, index):\n    return None\n"
-            "def strict_preflight(workspace, index):\n    return {'decision': 'pending'}\n",
+            "def strict_preflight(workspace, index):\n    return {'decision': 'fail'}\n",
             encoding="utf-8",
         )
         accepted = self.invoke("check")

@@ -159,6 +159,28 @@ def actor_stage_allowed(actor, stage, framework, mapping):
     return not allowed or stage in allowed
 
 
+def decision_consistency_errors(data):
+    """Check that the binary decision does not contradict a fully determined success."""
+    outcome = data.get("outcome") if isinstance(data, dict) else None
+    if not isinstance(outcome, dict):
+        return []
+    decision = outcome.get("decision")
+    coverage = data.get("coverage") if isinstance(data, dict) else None
+    goals = data.get("goals") if isinstance(data, dict) else None
+    errors = []
+    if decision == "success" and outcome.get("completion") != "success":
+        errors.append("success decision needs success completion")
+    complete_success = (
+        outcome.get("completion") == "success"
+        and isinstance(coverage, dict) and coverage.get("scan_complete") is True
+        and isinstance(goals, list) and bool(goals)
+        and all(isinstance(goal, dict) and goal.get("status") == "satisfied" for goal in goals)
+    )
+    if decision == "fail" and complete_success:
+        errors.append("fail decision conflicts with a fully satisfied complete result; use success")
+    return errors
+
+
 def validate_result(data, references=REFERENCES, evidence_root=None, access_receipt=None):
     try:
         from jsonschema import Draft202012Validator
@@ -492,23 +514,10 @@ def validate_result(data, references=REFERENCES, evidence_root=None, access_rece
 
     decision = data["outcome"]["decision"]
     completion = data["outcome"]["completion"]
-    if decision in ("fail", "precondition_blocked"):
-        check(completion in ("partial", "not_completed"), "completion/decision conflict")
-        check(any(g["status"] == "unsatisfied" for g in data["goals"]),
-              "failure or blocked decision needs an unsatisfied goal")
-    if decision in ("success", "fail", "rerun", "precondition_blocked"):
-        check(bool(data["outcome"]["evidence_ids"]), "outcome evidence required for a definitive decision")
-    if decision in ("fail", "precondition_blocked"):
-        check(any(evidence.get(eid, {}).get("kind") in ("screenshot", "execution_result")
-                  for eid in data["outcome"]["evidence_ids"]),
-              "observable failure evidence required, not only a module assertion or score")
-    if decision == "rerun":
-        check(any(evidence.get(eid, {}).get("kind") in ("screenshot", "execution_result", "metadata")
-                  for eid in data["outcome"]["evidence_ids"]), "rerun needs observable or provenance evidence")
+    errors.extend(decision_consistency_errors(data))
     if completion == "success":
         check(all(g["status"] == "satisfied" for g in data["goals"]), "success completion has unsatisfied/unknown goals")
     if decision == "success":
-        check(data["outcome"]["completion"] == "success", "success decision needs success completion")
         check(initial is None and recovery is None, "success must not fill failure root causes")
         check(all(g["status"] == "satisfied" for g in data["goals"]), "success has unsatisfied/unknown goals")
         check(bool(data["outcome"]["evidence_ids"]), "success needs outcome evidence")
@@ -520,16 +529,6 @@ def validate_result(data, references=REFERENCES, evidence_root=None, access_rece
     if data["contamination"]["status"] == "present":
         check(bool(data["contamination"]["evidence_ids"]), "confirmed contamination needs evidence")
         check(bool(data["contamination"]["reset_requirements"]), "confirmed contamination needs targeted reset requirements")
-        check(decision in ("rerun", "pending", "precondition_blocked"), "affected baseline needs rerun, pending, precondition_blocked")
-    if decision == "precondition_blocked":
-        check(any(p["status"] == "confirmed" for p in data["preconditions"]),
-              "precondition_blocked requires a confirmed precondition")
-        primary_is_precondition = (initial is not None and (
-            initial["labels"]["l1"] == "precondition" if entry and entry["schema"] == "hierarchy"
-            else initial["labels"]["function"] == "E2"))
-        check(primary_is_precondition, "blocked decision needs a precondition Initial")
-        if taxonomy is not None and "precondition" not in taxonomy and "E2" not in taxonomy.get("root_cause_functions", {}):
-            check(bool(data["template_gaps"]), "template lacks a dedicated precondition category; record the gap")
     if access_receipt is not None:
         errors.extend(validate_access_receipt(data, access_receipt, evidence_root))
     return errors

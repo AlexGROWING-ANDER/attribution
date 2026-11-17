@@ -100,6 +100,43 @@ class ReleaseTests(unittest.TestCase):
         )
         bundled_logic = bundled.split("\ndef main():", 1)[0]
         self.assertEqual(engine_logic, bundled_logic)
+    def test_binary_decision_requires_complete_success_evidence(self):
+        validator = load_validator()
+        self.assertEqual(validator.decision_consistency_errors({
+            "outcome": {"decision": "success", "completion": "success"},
+            "coverage": {"scan_complete": True},
+            "goals": [{"status": "satisfied"}],
+        }), [])
+        self.assertEqual(validator.decision_consistency_errors({
+            "outcome": {"decision": "fail", "completion": "unknown"},
+            "coverage": {"scan_complete": False},
+            "goals": [{"status": "unknown"}],
+        }), [])
+        errors = validator.decision_consistency_errors({
+            "outcome": {"decision": "success", "completion": "partial"},
+            "coverage": {"scan_complete": True},
+            "goals": [{"status": "satisfied"}],
+        })
+        self.assertTrue(any("success decision needs success completion" in error for error in errors))
+        errors = validator.decision_consistency_errors({
+            "outcome": {"decision": "fail", "completion": "success"},
+            "coverage": {"scan_complete": True},
+            "goals": [{"status": "satisfied"}],
+        })
+        self.assertTrue(any("use success" in error for error in errors))
+
+    def test_schema_and_policy_expose_only_binary_decisions(self):
+        for path in (
+            ROOT / "stepwise/skills/v3/gui-trajectory-attribution/references/output.schema.json",
+            ROOT / "docs/examples/global_summary.schema.json",
+        ):
+            with self.subTest(path=path.name):
+                schema = run_case.read_json(path)
+                self.assertEqual(schema["properties"]["outcome"]["properties"]["decision"]["enum"], ["success", "fail"])
+        policy = run_case.read_json(
+            ROOT / "stepwise/skills/v3/gui-trajectory-attribution/references/task-policy.json"
+        )
+        self.assertEqual(policy["decision_values"], ["success", "fail"])
 
     def test_static_framework_knowledge_configuration_is_not_shipped(self):
         self.assertFalse((ROOT / "config/framework-knowledge.json").exists())
@@ -166,6 +203,97 @@ class ReleaseTests(unittest.TestCase):
                     schema["properties"]["synthesis"]["required"],
                     ["summary"],
                 )
+
+    def test_reasoning_chain_preserves_only_emitted_reasoning_events(self):
+        with tempfile.TemporaryDirectory() as temp:
+            attempt = Path(temp) / "attempt_01"
+            attempt.mkdir()
+            stdout = attempt / "stdout.jsonl"
+            stdout.write_text("\n".join([
+                json.dumps({"type": "item.completed", "item": {
+                    "id": "reasoning-1", "type": "reasoning", "text": "first emitted thought",
+                }}),
+                json.dumps({"type": "response_item", "payload": {
+                    "id": "reasoning-2", "type": "reasoning",
+                    "summary": [{"type": "summary_text", "text": "second emitted thought"}],
+                }}),
+                json.dumps({"type": "event_msg", "payload": {
+                    "type": "item_completed", "item": {
+                        "id": "reasoning-2", "type": "Reasoning",
+                        "summary_text": ["second emitted thought"],
+                    },
+                }}),
+                json.dumps({"type": "item.completed", "item": {
+                    "id": "message-1", "type": "agent_message", "text": "not reasoning",
+                }}),
+            ]) + "\n", encoding="utf-8")
+            meta = ENGINE.write_reasoning_chain(
+                attempt, [stdout], module="gui-trajectory-attribution", model="test-model",
+            )
+            self.assertTrue(meta["available"])
+            self.assertEqual(meta["event_count"], 2)
+            records = [json.loads(line) for line in (attempt / "reasoning_chain.jsonl")
+                       .read_text(encoding="utf-8").splitlines()]
+            self.assertEqual([record["sequence"] for record in records], [1, 2])
+            self.assertEqual([record["text"] for record in records], [
+                "first emitted thought", "second emitted thought",
+            ])
+            markdown = (attempt / "reasoning_chain.md").read_text(encoding="utf-8")
+            self.assertIn("first emitted thought", markdown)
+            self.assertIn("second emitted thought", markdown)
+            self.assertNotIn("not reasoning", markdown)
+
+    def test_reasoning_chain_keeps_duplicate_events_without_ids(self):
+        with tempfile.TemporaryDirectory() as temp:
+            attempt = Path(temp) / "attempt_01"
+            attempt.mkdir()
+            stdout = attempt / "stdout.jsonl"
+            event = {"type": "item.completed", "item": {
+                "type": "reasoning", "text": "repeated emitted thought",
+            }}
+            stdout.write_text(json.dumps(event) + "\n" + json.dumps(event) + "\n",
+                              encoding="utf-8")
+            meta = ENGINE.write_reasoning_chain(attempt, [stdout])
+            self.assertEqual(meta["event_count"], 2)
+
+    def test_reasoning_chain_discovers_only_the_attempt_subagent_session(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            attempt = root / "batch/runs/example/attempt_01"
+            attempt.mkdir(parents=True)
+            (attempt / "status.json").write_text("{}\n", encoding="utf-8")
+            sessions = root / "sessions"
+            sessions.mkdir()
+            parent = sessions / "parent.jsonl"
+            parent.write_text("\n".join([
+                json.dumps({"type": "session_meta", "payload": {
+                    "id": "parent", "thread_source": "user", "source": "vscode",
+                }}),
+                json.dumps({"type": "item.completed", "item": {
+                    "id": "parent-reasoning", "type": "reasoning", "text": "wrong thread",
+                }}),
+                json.dumps({"type": "message", "text": str(attempt)}),
+            ]) + "\n", encoding="utf-8")
+            child = sessions / "child.jsonl"
+            child.write_text("\n".join([
+                json.dumps({"type": "session_meta", "payload": {
+                    "id": "child", "thread_source": "subagent",
+                    "source": {"subagent": {"thread_spawn": {"parent_thread_id": "parent"}}},
+                }}),
+                json.dumps({"type": "message", "text": str(attempt)}),
+                json.dumps({"type": "item.completed", "item": {
+                    "id": "child-reasoning", "type": "reasoning", "text": "right thread",
+                }}),
+            ]) + "\n", encoding="utf-8")
+            meta = ENGINE.write_reasoning_chain(
+                attempt, discover_attempt=True, sessions_root=sessions, write_empty=False,
+            )
+            self.assertTrue(meta["available"])
+            self.assertEqual(meta["event_count"], 1)
+            self.assertEqual(meta["sources"][0]["path"], str(child.resolve()))
+            records = [json.loads(line) for line in (attempt / "reasoning_chain.jsonl")
+                       .read_text(encoding="utf-8").splitlines()]
+            self.assertEqual(records[0]["text"], "right thread")
 
     def test_selection_rejects_duplicate_ids(self):
         manifest = {"cases": [{"case_id": "a"}, {"case_id": "b"}]}
@@ -875,6 +1003,14 @@ class AssemblyTests(unittest.TestCase):
         self.receipt["events"] = self.receipt["events"][1:]
         with self.assertRaisesRegex(ValueError, "Undelivered"):
             protocol.assemble(self.workspace, self.case, self.receipt)
+
+    def test_best_effort_assembly_keeps_the_citation_and_records_the_gap(self):
+        self.receipt["events"] = self.receipt["events"][1:]
+        result = protocol.assemble(self.workspace, self.case, self.receipt,
+                                   write_audit=False, allow_undelivered=True)
+        self.assertEqual(result["evidence"][0]["id"], "E01_1")
+        self.assertFalse(result["coverage"]["scan_complete"])
+        self.assertEqual(result["coverage"]["missing"], ["step_1/manager.json"])
 
     def test_unviewed_image_keeps_coverage_incomplete(self):
         self.receipt["events"] = self.receipt["events"][:1]

@@ -75,6 +75,10 @@ python3 stepwise/run_batch.py --manifest MANIFEST --out BATCH --finalize --resum
 
 ## 输出
 
-每个 case 保留独立工作区、原始 Prompt、input_binding.json、flux_session.json、读取确认票据、checkpoint、Step、global_summary、io_events、access_receipt、归一化审计、result.json 和 status.json；重试 attempt 另保留 retry_context.json。保存原生子任务标识及其完成结果用于追溯，不能从一句 DONE 重构缺失材料或伪造访问事件。
+每个 case 保留独立工作区、原始 Prompt、input_binding.json、flux_session.json、读取确认票据、checkpoint、Step、global_summary、io_events、access_receipt、归一化审计、result.json、attribution_result.json 和 status.json；重试 attempt 另保留 retry_context.json。保存原生子任务标识及其完成结果用于追溯，不能从一句 DONE 重构缺失材料或伪造访问事件。
+
+原生子任务的 reasoning 事件若由平台以 session JSONL 暴露，`finalize` 会按 attempt 路径自动查找对应 subagent session 并归档；若平台未自动落盘，可使用 `python3 stepwise/engine/reasoning_chain.py --attempt ATTEMPT --discover-attempt --module gui-trajectory-attribution`，已知 thread ID 时也可传 `--thread-id`。该命令只保存平台实际发出的 reasoning 事件和来源行号，生成 `reasoning_chain.jsonl`、`reasoning_chain.md` 与 `reasoning_chain.meta.json`；不得从不完整摘要或 DONE 回复补造隐藏思维链。平台未暴露 reasoning 时保留 `available=false`。
+
+`attribution_result.json` 与校验状态解耦：`validated` 时取规范化后的 `result.json`；`invalid` 时仍保留模型已给出的判定、完成度、goals、主因、L1/L2/L3 和 synthesis，并写明校验错误与来源。若正常组装失败，使用已提交的 Step 与 `global_summary.json` 生成 best-effort `result.json`；即便只能降级组装，也必须保留真实 labels 和 coverage 缺口，并通过 `result_provenance.json` 标记 `validation_passed=false`。批次同时生成 `attribution_results.json` 汇总全部案例，包括 invalid；不得因为校验失败而从归因输出中删除模型已给出的结果。该校验后结果不冒充 `validated`，也不能用于覆盖原始提交。
 
 汇总说明实际派发、attempt 数、validated/unresolved/待执行数量及证据覆盖，未完成项保持未完成。不得把第一次 invalid 当作最终结果；必须继续执行自动生成的重试任务直到 validated 或明确报告预算耗尽。离线工程检查和离线历史 GUI 材料归因不冒充业务 API/GUI 测试，不制造业务测试轮次。

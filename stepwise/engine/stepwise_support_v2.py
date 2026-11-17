@@ -183,7 +183,7 @@ def stage_local_preflight(workspace):
     shutil.copyfile(skill / "manifest.json", destination / "skill_manifest.json")
     return destination
 
-def assemble(workspace,case,receipt,*,write_audit=True):
+def assemble(workspace,case,receipt,*,write_audit=True,allow_undelivered=False):
     workspace=Path(workspace);schema_validator=Draft202012Validator(STEP_SCHEMA)
     checkpoint_plan,checkpoint_sha,io_events,checkpoint_event=load_submitted_checkpoint_plan(workspace,case)
     records=[];evidence=[];process=[];catalog={e['source_id']:e for e in case['inventory']}
@@ -211,7 +211,7 @@ def assemble(workspace,case,receipt,*,write_audit=True):
         for j,observation in enumerate(value['evidence'],1):
             source=catalog.get(observation['source_id'])
             if source is None:raise ValueError('Unknown evidence source_id')
-            if source['source'] not in delivered:raise ValueError(
+            if source['source'] not in delivered and not allow_undelivered:raise ValueError(
                 f"Undelivered evidence source {source['source_id']}; read its page or image and confirm the delivery ticket before citing it")
             identifier=f'E{step:02d}_{j}';ids.append(identifier)
             source_step=source.get('step')

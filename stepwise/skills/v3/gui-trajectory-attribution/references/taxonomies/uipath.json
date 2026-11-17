@@ -89,7 +89,7 @@
         "label": "E2: Task Precondition（预置问题）",
         "description": "Task preconditions. Module=null; Mechanism=precondition type.",
         "include": "账号／权限限制；目标内容不足；指定功能／选项不可用；无符合条件的结果；容量／业务规则限制",
-        "exclude": "App真正异常仍用E1；模型独立错误按对应F类；通信门控未放行及需人工准备的登录等仍按已确认重跑口径处置"
+        "exclude": "App真正异常仍用E1；模型独立错误按对应F类；通信门控未放行及需人工准备的登录等只记录为预置事实，不改变任务是否完成的判定"
       }
     },
     "recovery_functions": {
@@ -323,7 +323,7 @@
         "label": "E2: Task Precondition",
         "description": "Task preconditions. Module=null; Mechanism=precondition type.",
         "include": "Account or permission restrictions; insufficient content; unavailable features or options; no matching results; capacity or business-rule restrictions.",
-        "exclude": "Actual App malfunction remains E1; independent model errors use the relevant F function. Preserve the agreed rerun disposition for missing communication authorization or manual login preparation."
+        "exclude": "Actual App malfunction remains E1; independent model errors use the relevant F function. Communication authorization and login preparation are recorded only as facts; the decision remains completion-based."
       }
     },
     "recovery_functions": {

@@ -264,15 +264,69 @@ class TestFluxBatch(unittest.TestCase):
         self.assertEqual(self.summary()["state"], "prepared")
         self.assertEqual(self.summary()["results"]["a"]["state"], "ready_for_flux")
 
+    def test_invalid_without_result_exports_attribution_from_global_summary(self):
+        self.bind_batch(["a"])
+        directory = self.stage("a", "invalid", validation_errors=["Step assembly: Undelivered evidence source"])
+        save(directory / "workspace" / "global_summary.json", {
+            "outcome": {"decision": "fail", "completion": "partial"},
+            "attribution": {"initial": {
+                "step": 2, "responsible_actor": "worker", "stage": "verification",
+                "labels": {"l1": "framework", "l2": "worker", "l3": "no_goal_state_verification"},
+            }},
+            "synthesis": {"summary": "Invalid attempt attribution remains available."},
+        })
+        self.assertEqual(self.run_cli("--collect", "--cases", "a"), 1)
+        summary = self.summary()["results"]["a"]["attribution_summary"]
+        self.assertEqual(summary["decision"], "fail")
+        self.assertEqual(summary["initial"]["l3"], "no_goal_state_verification")
+        aggregate = run_batch.read_json(self.output / "attribution_results.json")
+        case = aggregate["cases"][0]
+        self.assertEqual(case["result_source"], "global_summary")
+        self.assertEqual(case["synthesis"]["summary"], "Invalid attempt attribution remains available.")
+
+    def test_unusable_result_falls_back_to_global_summary(self):
+        self.bind_batch(["a"])
+        directory = self.stage("a", "invalid")
+        save(directory / "result.json", {"case": {"id": "a"}})
+        save(directory / "workspace" / "global_summary.json", {
+            "outcome": {"decision": "fail", "completion": "partial"},
+            "attribution": {"initial": {"step": 1, "responsible_actor": "worker",
+                                        "stage": "planning", "labels": {"l3": "wrong_goal"}}},
+            "synthesis": {"summary": "Fallback attribution."},
+        })
+        self.assertEqual(self.run_cli("--collect", "--cases", "a"), 1)
+        aggregate = run_batch.read_json(self.output / "attribution_results.json")
+        case = aggregate["cases"][0]
+        self.assertEqual(case["result_source"], "global_summary")
+        self.assertEqual(case["attribution"]["initial"]["labels"]["l3"], "wrong_goal")
+
+    def test_retry_keeps_the_invalid_attempt_attribution_in_the_batch_export(self):
+        self.bind_batch(["a"])
+        directory = self.stage("a", "invalid", validation_errors=["Step assembly: Undelivered evidence source"])
+        save(directory / "workspace" / "global_summary.json", {
+            "outcome": {"decision": "fail", "completion": "partial"},
+            "attribution": {"initial": {"step": 1, "responsible_actor": "worker",
+                                        "stage": "verification", "labels": {"l3": "wrong_target"}}},
+            "synthesis": {"summary": "Retained invalid attempt."},
+        })
+        self.assertEqual(self.run_cli("--resume", "--cases", "a"), 0)
+        aggregate = run_batch.read_json(self.output / "attribution_results.json")
+        attempts = {item["attempt"]: item for item in aggregate["cases"]}
+        self.assertTrue(attempts["attempt_01"]["available"])
+        self.assertEqual(attempts["attempt_01"]["outcome"]["decision"], "fail")
+        self.assertEqual(attempts["attempt_02"]["state"], "ready_for_flux")
+
     def test_retry_hints_cover_windows_schema_contamination_and_coverage_errors(self):
         hints = run_batch.repair_hints([
             "Schema $.goals[0].extra: unexpected field",
-            "affected baseline needs rerun, pending, precondition_blocked",
+            "confirmed contamination needs targeted reset requirements",
             "complete review lacks complete runtime access events",
+            "success decision requires complete review",
         ])
         self.assertTrue(any("global_summary" in hint for hint in hints))
         self.assertTrue(any("baseline" in hint for hint in hints))
         self.assertTrue(any("coverage" in hint for hint in hints))
+        self.assertTrue(any("success/fail" in hint for hint in hints))
 
     def test_retry_budget_exhaustion_is_explicit_and_terminal(self):
         self.bind_batch(["a"], max_attempts=2)

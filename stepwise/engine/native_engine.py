@@ -10,9 +10,11 @@ from jsonschema import Draft202012Validator
 from PIL import Image
 from harness.protocol import OutputProtocol,SourceCatalog,parse_wire_json
 from harness.storage import atomic_json
+from attribution_output import write_attribution_result
 from framework_architecture import install_framework_architecture,resolve_framework_architecture,select_framework_binding
 from study.materials import EvidenceStore
 from responses_transport import forward_responses,route_request
+from reasoning_chain import write_reasoning_chain
 import platform_runtime
 import normalization as canonical_normalization
 DEFAULT_MODEL='deepseek-v4.1-flash'
@@ -399,7 +401,50 @@ def finish(out,case,skill,protocol,raw,receipt,meta,evidence_root=None):
   schema_errors=[e.message for e in Draft202012Validator(protocol.wire_schema()).iter_errors(protocol.project(result))]
   meta.update(state='validated' if not errors and not schema_errors else 'invalid',schema_errors=schema_errors,validation_errors=errors,parse_audit=parse_audit)
  except Exception as e:meta.update(state=('infra_failed' if INFRA_PAT.search(str(e)) else 'invalid'),error=type(e).__name__+': '+str(e)[:1800])
- atomic(out/'status.json',meta);return meta
+ atomic(out/'status.json',meta)
+ if meta.get('state')!='validated':write_best_effort_result(out,case,protocol,receipt,meta.get('state'),meta.get('error'))
+ write_attribution_result(out,case,meta.get('state'),meta.get('validation_errors'),meta.get('schema_errors'))
+ return meta
+
+
+def write_best_effort_result(out,case,protocol,receipt,state,error=None):
+ """Keep a schema-shaped result.json even when strict assembly/validation fails."""
+ out=Path(out)
+ path=out/'result.json'
+ if path.is_file():return None
+ workspace=out/'workspace';summary_path=workspace/'global_summary.json'
+ if not summary_path.is_file():return None
+ try:
+  summary=json.loads(summary_path.read_text(encoding='utf-8-sig'))
+ except (OSError,ValueError,TypeError):
+  return None
+ if not isinstance(summary,dict) or not isinstance(summary.get('goals'),list) or not summary['goals']:
+  return None
+ kind='best_effort_assembly';last_error=error
+ try:
+  projection=assemble(workspace,case,receipt,write_audit=False,allow_undelivered=True)
+  canonical_normalization.normalize_prediction(projection,case)
+  result=protocol.compile(projection)
+ except Exception as exc:
+  last_error=f"{type(exc).__name__}: {str(exc)[:1200]}"
+  try:
+   projection={key:copy.deepcopy(value) for key,value in summary.items()
+               if key in ('outcome','contamination','preconditions','goals','error_candidates',
+                          'synthesis','attribution','recovery_opportunity','template_gaps','limitations')}
+   projection.update(evidence=[],process=[],coverage={
+    'log_steps_read':[],'screenshots_viewed':[],
+    'missing':[entry['source'] for entry in case.get('inventory',[])],
+    'truncations':[],'unresolved':['best-effort assembly used because step assembly was incomplete'],
+    'scan_complete':False})
+   result=protocol.compile(projection);kind='minimal_fallback'
+  except Exception as fallback_exc:
+   atomic(out/'result_fallback_error.json',{'state':state,'assembly_error':last_error,
+    'fallback_error':f"{type(fallback_exc).__name__}: {str(fallback_exc)[:1200]}"})
+   return None
+ atomic(out/'result.json',result)
+ atomic(out/'result_provenance.json',{'schema':'attribution-result-provenance-v1','kind':kind,
+  'validation_state':state,'validation_passed':False,'error':last_error})
+ return result
 
 
 def run_native(case,skill,sm,protocol,store,out,wall=850,*,command,endpoint,key,
@@ -549,6 +594,11 @@ def run_native(case,skill,sm,protocol,store,out,wall=850,*,command,endpoint,key,
   timed=True;runtime.kill_process_tree(proc);stdout,stderr=proc.communicate(timeout=20)
  finally:server.shutdown();server.server_close()
  (out/'stdout.jsonl').write_text(clean(stdout),encoding='utf8');(out/'stderr.txt').write_text(clean(stderr),encoding='utf8')
+ try:
+  reasoning_meta=write_reasoning_chain(out,[out/'stdout.jsonl'],module='gui-trajectory-attribution',model=model)
+ except Exception as reasoning_error:
+  reasoning_meta={'schema':'reasoning-chain-v1','available':False,
+                  'error':type(reasoning_error).__name__+': '+str(reasoning_error)[:500]}
  atomic(out/'access_receipt.json',receipt())
  raw=(out/'answer.txt').read_text(encoding='utf8') if (out/'answer.txt').exists() else ''
  try:
@@ -556,12 +606,16 @@ def run_native(case,skill,sm,protocol,store,out,wall=850,*,command,endpoint,key,
  except Exception as exc:
   terminal_error=str(aud[-1].get('error') or '') if aud else ''
   network_interruption=bool(proc.returncode or timed) and any(word in terminal_error.lower() for word in ('getaddrinfo','connection refused','connection reset','stream total deadline','name resolution','timed out','502 bad gateway','certificate_verify_failed','certificate verify failed','unexpected_eof','ssl:','winerror 10054','winerror 10060'))
-  failure={'case_id':case['case_id'],'state':'infra_failed' if network_interruption else 'invalid','protocol':'stepwise_fast_v2','prompt_version':PROMPT_VERSION,'validator_patch_version':'answer-delivery-direction-v1','validator_sha256':sha(HERE/'validate_result.py'),'error':terminal_error if network_interruption else 'Step assembly: '+str(exc),'assembly_error':str(exc),'returncode':proc.returncode,'timed_out':timed,'seconds':round(time.monotonic()-start,2),'post_validator_model_repair':False}
-  atomic(out/'status.json',failure);return failure
+  failure={'case_id':case['case_id'],'state':'infra_failed' if network_interruption else 'invalid','protocol':'stepwise_fast_v2','prompt_version':PROMPT_VERSION,'validator_patch_version':'answer-delivery-direction-v1','validator_sha256':sha(HERE/'validate_result.py'),'error':terminal_error if network_interruption else 'Step assembly: '+str(exc),'assembly_error':str(exc),'returncode':proc.returncode,'timed_out':timed,'seconds':round(time.monotonic()-start,2),'post_validator_model_repair':False,'reasoning_chain':reasoning_meta}
+  atomic(out/'status.json',failure)
+  write_best_effort_result(out,case,protocol,receipt(),failure['state'],failure.get('error'))
+  write_attribution_result(out,case,failure['state'],[failure.get('assembly_error')]);return failure
  complete=len({e['source'] for e in events})==len(case['inventory'])
- meta={'case_id':case['case_id'],'family':'native_d60','platform':runtime.name,'submission_helper':runtime.helper_name,'model':model,'model_source':model_source,'model_provider':model_provider,'version':sm['skill_version'],'returncode':proc.returncode,'timed_out':timed,'coverage_complete':complete,'delivered_sources':len(events),'required_sources':len(case['inventory']),'delivered_images':len(viewed),'required_images':case['image_count'],'derived_views_delivered':len(derived_audit),'completed_pages':len(page_hits),'required_pages':len(pages),'upstream_calls':sum(bool(x.get('sent_upstream')) for x in aud),'bridge_requests':len(aud),'seconds':round(time.monotonic()-start,2),'run_directory':str(out),'approval_surrogate_not_official_model':True,'protocol':'stepwise_fast_v2','prompt_version':PROMPT_VERSION,'validator_patch_version':'answer-delivery-direction-v1','validator_sha256':sha(HERE/'validate_result.py'),'post_validator_model_repair':False}
+ meta={'case_id':case['case_id'],'family':'native_d60','platform':runtime.name,'submission_helper':runtime.helper_name,'model':model,'model_source':model_source,'model_provider':model_provider,'version':sm['skill_version'],'returncode':proc.returncode,'timed_out':timed,'coverage_complete':complete,'delivered_sources':len(events),'required_sources':len(case['inventory']),'delivered_images':len(viewed),'required_images':case['image_count'],'derived_views_delivered':len(derived_audit),'completed_pages':len(page_hits),'required_pages':len(pages),'upstream_calls':sum(bool(x.get('sent_upstream')) for x in aud),'bridge_requests':len(aud),'seconds':round(time.monotonic()-start,2),'run_directory':str(out),'approval_surrogate_not_official_model':True,'protocol':'stepwise_fast_v2','prompt_version':PROMPT_VERSION,'validator_patch_version':'answer-delivery-direction-v1','validator_sha256':sha(HERE/'validate_result.py'),'post_validator_model_repair':False,'reasoning_chain':reasoning_meta}
  if (proc.returncode or timed) and not raw:
   _err=(stderr[-2200:] if stderr else 'No final output')
   meta.update(state='infra_failed' if INFRA_PAT.search(_err) else 'runtime_failed',error=_err)
-  atomic(out/'status.json',meta);return meta
+  atomic(out/'status.json',meta)
+  write_best_effort_result(out,case,protocol,receipt(),meta['state'],_err)
+  write_attribution_result(out,case,meta['state'],[_err]);return meta
  return finish(out,case,skill,protocol,raw,receipt(),meta)

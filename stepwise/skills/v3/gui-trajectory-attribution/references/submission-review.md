@@ -18,7 +18,9 @@
 
 “全部现有文件已读取”与“完成判定所需材料充分”分开记录。逐一辨别缺口：文件确实缺失、内容不可读、实际传输被截断、还是该阶段可能本就不产生该文件。终止动作后没有 Reflector 不足以证明日志丢失；无运行规范或终止元数据时说明不确定，不补造文件存在性。
 
-按当前输出合同，只要 missing/truncations 仍记录真实缺口，scan_complete 就不能为 true。原日志自身的重复/畸形文本应作为内容问题说明，不能谎称本次 API 传输截断。尚未完成全面复核时，保留已有 completion 证据，最终处置可用 pending；不得为取得 success 清空真实缺口。
+按当前输出合同，只要 missing/truncations 仍记录真实缺口，scan_complete 就不能为 true。原日志自身的重复/畸形文本应作为内容问题说明，不能谎称本次 API 传输截断。尚未完成全面复核时，保留已有 completion 事实并把 decision 记为 fail；不得为取得 success 清空真实缺口。
+
+decision 只有 success/fail：覆盖完整、所有 goal 均为 satisfied 且完成证据充分时用 success，否则用 fail。其他取值会被本地 `io.py check` 直接拒绝，并保留错误供修正。
 
 
 ## 因果解释与责任来源

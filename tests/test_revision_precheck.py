@@ -59,7 +59,7 @@ class RevisionPrecheckTests(unittest.TestCase):
             "detail": "Saved checkpoint plan sha256=" + plan_sha,
         }) + "\n", encoding="utf-8")
         save(self.workspace / "global_summary.schema.json", {"required": ["decision", "goals"]})
-        save(self.workspace / "global_summary.json", {"decision": "pending", "goals": [{**self.goal, "status": "unknown"}]})
+        save(self.workspace / "global_summary.json", {"decision": "fail", "goals": [{**self.goal, "status": "unknown"}]})
         self.receipt = {"events": [
             {"source": entry["source"], "success": True, "content_complete": True, "truncated": False}
             for entry in self.case["inventory"]
@@ -69,7 +69,7 @@ class RevisionPrecheckTests(unittest.TestCase):
         self.temp.cleanup()
 
     def invoke(self, mode: str) -> subprocess.CompletedProcess:
-        payload = {"decision": "pending", "goals": [{**self.goal, "status": "unknown"}]}
+        payload = {"decision": "fail", "goals": [{**self.goal, "status": "unknown"}]}
         return subprocess.run(
             [PWSH, "-NoProfile", "-NonInteractive", "-File", str(self.workspace / "io.ps1"),
              "-Mode", mode, "-Json", json.dumps(payload, ensure_ascii=False)],

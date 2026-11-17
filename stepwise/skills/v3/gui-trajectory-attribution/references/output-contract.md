@@ -2,7 +2,7 @@
 
 机器输出遵守 output.schema.json，UTF-8 JSON，不包含Markdown围栏。所有顶层字段必填；真正未知使用约定枚举/null，不用空字符串或0伪装标签/步骤。本契约只规定归因结果的结构与证据要求，展示及外部系统写入由调用方另行处理。
 
-正式JSON以已确认的原始指令、attempt、框架及注册模板为前提。缺少这些身份信息时先返回输入缺口清单，不为满足枚举而猜选模板或编造attempt；这份补充材料请求不是schema结果。身份完整但日志或图片缺失时，仍可输出带pending/unknown及覆盖缺口的JSON。
+正式JSON以已确认的原始指令、attempt、框架及注册模板为前提。缺少这些身份信息时先返回输入缺口清单，不为满足枚举而猜选模板或编造attempt；这份补充材料请求不是schema结果。身份完整但日志或图片缺失时，仍可输出 completion=unknown、decision=fail 及覆盖缺口的JSON。
 
 ## 规范存储与显式提交视图
 
@@ -12,7 +12,7 @@
 
 case：framework 使用当前清单绑定的机器 ID；dataset 独立填写实际数据集；task_id、attempt、适配器版本单列，未知版本填 unknown。template_id、template_sha256、policy_id 和 skill_version 从模板注册表读取，不能凭空生成。
 
-outcome：completion是任务客观完成情况；decision是处置，不互相代替。区分fail、需清理重跑、语义摘出、预置阻塞及证据待核。basis说明原因，evidence_ids指向原始材料。
+outcome：completion是任务客观完成情况；decision只有 success/fail，表示是否完成。只有 completion=success、全部 goals satisfied、覆盖完整且完成证据充分时使用 success；其余情况使用 fail。basis说明原因，evidence_ids指向支持该判定的原始材料。
 
 contamination、preconditions 分别记录，不能互相覆盖。preconditions 使用当前模板预置类型的机器 ID；项目扩展分类不声称为上游官方标签。每项包含 Agent 如何识别/处理，能区分环境不足与应对错误。污染来源未知写明未知，reset_requirements 仅列目标对象需要恢复的状态，不建议清空全部账号数据。
 
@@ -70,11 +70,11 @@ success：Initial和Recovery均null、absence_reason写无需失败归因，Reco
 
 responsible_actor 与候选 actor 一致还不够，还必须与最终模块标签符合 actor-mapping.json 中的映射。同一别名是否可借用另一组件标签，只以当前 actor-mapping 为准；不得因名称相近跨组件借用。App 与预置问题使用外部来源；设备适配来源若当前 taxonomy 明确没有对应模型模块，可保持模块空值并报告映射缺口，不强归模型组件。
 
-completion=success表示已有证据显示目标达成；decision=success表示完整检查后符合整体成功标准。最终success需要全量检查、非空验收目标全部满足、直接完成证据及空失败根因。未完成规定检查时，保留已确认的completion，decision先用pending。
+completion=success表示已有证据显示目标达成；decision=success表示完整检查后确认任务完成。最终success需要全量检查、非空验收目标全部满足、直接完成证据及空失败根因。未完成规定检查或仍有真实材料缺口时不能记 success；保留已确认的 completion 事实，并将 decision 记为 fail。
 
-fail与precondition_blocked要求completion为partial或not_completed，至少一项验收目标明确unsatisfied，并有截图或执行回执支持结果，不能仅引用模型自述、score或无证据文字。rerun需要对应的截图、执行回执或有来源的运行/准备记录。没有可支持确定结果的材料时，用pending或unknown，不以填入原因文字代替证据。
+decision 只有二值，只表示任务是否完成；污染、预置条件和证据缺口分别记录，不产生额外处置值。partial、not_completed、unknown 均为 fail。fail 允许没有 unsatisfied goal：证据不足时可将 goals 保留 unknown、completion 记 unknown，并写明缺口和 absence_reason；不得用一个原因标签假装已证明具体失败。若 goal 已明确 unsatisfied，则按证据正常归因。
 
-precondition_blocked还需有匹配confirmed预置记录与对应的Initial预置归因；模型独立错误作为主要原因时通常decision=fail，预置限制仍另行记录，不能因出现过账号提示就将已完成任务判为blocked。
+contamination 与 preconditions 只记录事实、影响和必要的恢复前提，不改变 decision。即使存在已确认污染、登录限制、账号权限或运行器通信限制，只要任务完成且满足 success 条件仍记 success；否则记 fail。
 
 Recovery三字段合法组合：
 
