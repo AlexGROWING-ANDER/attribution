@@ -58,6 +58,6 @@ JSON
 
 ## Check and completion
 
-Run `python3 io.py check` once. On rejection, allow one targeted correction through the permitted paths and one recheck; preserve original steps. Do not search for alternative Python/Node tools, install dependencies or run/build a strict validator. The caller runs strict validation once, with no model repair afterwards.
+Run `python3 io.py check` after the global summary. It performs strict schema validation, verifies every confirmed image delivery ticket, and replays the canonical assembler plus local semantic validator used by finalization. On rejection, apply a targeted correction through the permitted paths and recheck immediately; preserve original steps. Up to three correction-and-recheck cycles are allowed. Do not report DONE until the local check passes. Do not search for alternative Python/Node tools, install dependencies or run/build another validator. The caller performs final validation; if it still rejects, the batch creates a fresh retry attempt with the exact validation errors in `retry_context.json`.
 
 Reply exactly DONE when materials and files are complete and the local check passes; otherwise report the blocker. Local corrections and normalization are recorded separately.

@@ -16,7 +16,7 @@ python3 data/bootstrap_attribution.py run --prepared /path/to/prepared --jobs 2 
 
 这些命令生成固定清单、架构绑定和 Flux 任务文件。随后 Flux 执行 dispatch.json 中的原生任务；命令行脚本不会通过虚构接口自动调用 Flux。原生子任务不可用时，当前 Flux 会话可顺序执行。
 
-`--jobs` 为原生任务并发上限，范围 1—5；执行时还需服从实际 cgroup 配额。Python 准备阶段顺序执行。恢复同一范围使用 `--resume`，不覆盖已有尝试；`PAUSE` 阻止新派发。ready_for_flux 只代表材料可执行。
+`--jobs` 为原生任务并发上限，范围 1—5；执行时还需服从实际 cgroup 配额。Python 准备阶段顺序执行。恢复同一范围使用 `--resume`，不覆盖已有尝试；`PAUSE` 阻止新派发。`--max-attempts` 默认 3，表示每个案例最多 3 个全新 attempt；最终校验失败会自动创建下一次 attempt，并把精确错误写入 `retry_context.json`。ready_for_flux 只代表材料可执行。
 
 ## 输入与归因规则
 
@@ -41,11 +41,11 @@ access_receipt.json 的 producer 保持原校验器要求的 harness，confirmat
 Flux 子任务先提交 checkpoint，再按顺序经 io.py 保存 Step 和 global_summary.json，执行本地 check，回复 DONE。父任务执行：
 
 ```bash
-python3 stepwise/run_case.py --manifest /path/to/prepared/inputs/run_manifest.json --case CASE_ID --out /path/to/prepared/batch/runs/CASE_ID/attempt_01 --finalize
+python3 stepwise/run_batch.py --manifest /path/to/prepared/inputs/run_manifest.json --out /path/to/prepared/batch --finalize --resume
 python3 stepwise/run_batch.py --manifest /path/to/prepared/inputs/run_manifest.json --out /path/to/prepared/batch --collect --resume
 ```
 
-父任务按原算法组装并严格校验一次，不进行最终校验反馈后的模型回修。只有 validated 算程序校验通过；它不等于归因准确率。尚未提交、invalid 和运行阻塞分别统计，不能以材料准备或 DONE 单句替代完整结果。
+父任务按原算法组装并严格校验。校验失败时批次自动保留原 attempt，创建 `attempt_02`…`attempt_03`，把具体错误写入新 attempt 的 `retry_context.json` 并重新派发；新 attempt 必须从原始材料重新分析，不读取上一轮预测。启动前超时/失败、binding 或 status 损坏同样消耗 attempt 预算，不会无限重跑同一目录。预算耗尽仍失败才标记 `unresolved_after_retries`。`--finalize` 只有所有案例均为 `validated` 才返回 0；`awaiting_retry` 表示重试任务尚未完成，必须继续执行并再次 finalize。只有 validated 算程序校验通过；它不等于归因准确率。尚未提交、重试待执行和预算耗尽分别统计，不能以材料准备或 DONE 单句替代完整结果。
 
 每条尝试保留 input_binding.json、flux_session.json、Prompt、工具确认票据、io_events、回执、checkpoint、Step、global_summary、result、status 及归一化审计。原生子任务的标识和完成结果由 Flux 父任务保留。
 

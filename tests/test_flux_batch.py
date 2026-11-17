@@ -25,7 +25,7 @@ class TestFluxBatch(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
-        self.root = Path(temporary.name)
+        self.root = Path(temporary.name).resolve()
         self.runtime = self.root / "runtime" / "stepwise"
         save(self.runtime.parent / "RELEASE_MANIFEST.json", {"files": {}})
         save(self.runtime / "skills/v3/manifest.json", {"files": {}})
@@ -44,30 +44,32 @@ class TestFluxBatch(unittest.TestCase):
         self.child = subprocess_patch.start()
         self.addCleanup(subprocess_patch.stop)
 
-    def identity(self, scope=None):
-        return run_batch.batch_identity(self.manifest, scope or ["a", "b"], 3600)
+    def identity(self, scope=None, max_attempts=3):
+        return run_batch.batch_identity(self.manifest, scope or ["a", "b"], 3600, max_attempts)
 
-    def attempt(self, case_id):
-        return self.output / "runs" / case_id / "attempt_01"
+    def attempt(self, case_id, index=1):
+        return self.output / "runs" / case_id / f"attempt_{index:02d}"
 
-    def bind_batch(self, scope=None):
-        save(self.output / "batch_identity.json", self.identity(scope))
+    def bind_batch(self, scope=None, max_attempts=3):
+        save(self.output / "batch_identity.json", self.identity(scope, max_attempts))
 
-    def stage(self, case_id, state="ready_for_flux"):
-        directory = self.attempt(case_id)
+    def stage(self, case_id, state="ready_for_flux", index=1, retry_context=None, **extra):
+        directory = self.attempt(case_id, index)
         save(directory / "input_binding.json", {
             **{key: self.identity()[key] for key in run_batch.BINDING_KEYS},
             "case_id": case_id, "manifest_path": str(self.manifest),
         })
+        if retry_context is not None:
+            save(directory / "retry_context.json", retry_context)
         (directory / "flux_task.md").write_text("Synthetic Flux task", encoding="utf-8")
-        save(directory / "status.json", {"case_id": case_id, "state": state})
+        save(directory / "status.json", {"case_id": case_id, "state": state, **extra})
         if state == "validated":
             save(directory / "result.json", {"case": next(c["identity"] for c in self.cases
                                                         if c["case_id"] == case_id)})
         return directory
 
-    def submit(self, case_id):
-        workspace = self.attempt(case_id) / "workspace"
+    def submit(self, case_id, index=1):
+        workspace = self.attempt(case_id, index) / "workspace"
         save(workspace / "checkpoint_plan.json", {"checkpoints": []})
         save(workspace / "global_summary.json", {"goals": []})
         for step in (1, 3):
@@ -78,9 +80,15 @@ class TestFluxBatch(unittest.TestCase):
         self.assertNotIn("--finalize", command)
         case_id = command[command.index("--case") + 1]
         directory = Path(command[command.index("--out") + 1])
-        self.assertEqual(directory, self.attempt(case_id))
+        index = run_batch.attempt_index(directory)
+        self.assertEqual(directory, self.attempt(case_id, index))
         self.assertFalse(directory.exists(), "Preparation must never overwrite an attempt")
-        self.stage(case_id)
+        retry_context = None
+        if "--retry-context" in command:
+            retry_context = run_batch.read_json(Path(command[command.index("--retry-context") + 1]))
+            self.assertEqual(retry_context["case_id"], case_id)
+            self.assertEqual(retry_context["attempt_index"], index)
+        self.stage(case_id, index=index, retry_context=retry_context)
         kwargs["stdout"].write(b'{"state":"ready_for_flux"}\n')
         return subprocess.CompletedProcess(command, 0)
 
@@ -120,7 +128,8 @@ class TestFluxBatch(unittest.TestCase):
         self.assertEqual(dispatch["batch_identity"], binding)
         self.assertEqual(dispatch["tasks"], [
             {"case_id": case_id, "out": str(self.attempt(case_id)),
-             "task_path": str(self.attempt(case_id) / "flux_task.md"), "state": "ready_for_flux"}
+             "task_path": str(self.attempt(case_id) / "flux_task.md"), "state": "ready_for_flux",
+             "attempt_index": 1, "retry_of": None, "retry_required": False}
             for case_id in ("b", "a")])
         self.assertFalse((self.output / "batch.lock").exists())
 
@@ -132,6 +141,7 @@ class TestFluxBatch(unittest.TestCase):
 
     def test_invalid_jobs_wall_and_modes_fail_before_creating_output(self):
         for flags in (("--jobs", "0"), ("--jobs", "6"), ("--wall", "0"),
+                      ("--max-attempts", "0"), ("--max-attempts", "11"),
                       ("--collect", "--finalize"), ("--env-file", "unused")):
             with self.subTest(flags=flags), self.assertRaises(SystemExit) as error:
                 self.run_cli(*flags)
@@ -149,7 +159,8 @@ class TestFluxBatch(unittest.TestCase):
 
     def test_resume_rejects_changed_scope_and_wall_without_overwriting(self):
         self.assertEqual(self.run_cli(), 0)
-        before = self.snapshot_attempts()
+        before = {path: data for path, data in self.snapshot_attempts().items()
+                  if path.startswith("runs/a/attempt_01/")}
         metadata = (self.output / "batch_state.json").read_bytes()
         self.child.reset_mock()
         for flags in (("--resume", "--cases", "a"), ("--resume", "--cases", "b", "a"),
@@ -157,7 +168,8 @@ class TestFluxBatch(unittest.TestCase):
             with self.subTest(flags=flags), self.assertRaisesRegex(ValueError, "identical input scope"):
                 self.run_cli(*flags)
         self.child.assert_not_called()
-        self.assertEqual(self.snapshot_attempts(), before)
+        self.assertEqual({path: data for path, data in self.snapshot_attempts().items()
+                          if path.startswith("runs/a/attempt_01/")}, before)
         self.assertEqual((self.output / "batch_state.json").read_bytes(), metadata)
 
     def test_resume_collect_finalize_reject_every_changed_hash(self):
@@ -188,31 +200,42 @@ class TestFluxBatch(unittest.TestCase):
         self.child.assert_not_called()
         self.assertFalse(self.output.exists())
 
-    def test_resume_preserves_prepared_pending_and_terminal_attempts(self):
-        for state in ("ready_for_flux", "pending", "validated", "invalid", "runtime_failed",
-                      "infra_failed", "interrupted"):
-            with self.subTest(state=state):
-                self.bind_batch()
-                self.stage("a", state)
-                self.stage("b", state)
-                before = self.snapshot_attempts()
-                self.assertEqual(self.run_cli("--resume"), 0 if state in ("ready_for_flux", "validated") else 1)
-                self.assertEqual(self.summary()["finished_records"], 2 if state in run_batch.FINAL_STATES else 0)
-                self.assertEqual(self.snapshot_attempts(), before)
+    def test_resume_preserves_ready_validated_and_interrupted_attempts(self):
+        self.bind_batch()
+        self.stage("a", "ready_for_flux")
+        self.stage("b", "validated")
+        before = self.snapshot_attempts()
+        self.assertEqual(self.run_cli("--resume"), 0)
+        self.assertEqual(self.summary()["states"], {"ready_for_flux": 1, "validated": 1})
+        self.assertEqual(self.summary()["finished_records"], 1)
+        self.assertEqual(self.snapshot_attempts(), before)
         self.child.assert_not_called()
 
-    def test_resume_does_not_overwrite_partial_attempt(self):
+        (self.output / "runs").rename(self.output / "old-runs")
+        self.stage("a", "interrupted")
+        self.stage("b", "interrupted")
+        before = self.snapshot_attempts()
+        self.assertEqual(self.run_cli("--resume"), 1)
+        self.assertEqual(self.summary()["states"], {"interrupted": 2})
+        self.assertEqual(self.summary()["finished_records"], 2)
+        self.assertEqual(self.snapshot_attempts(), before)
+        self.child.assert_not_called()
+
+    def test_resume_creates_next_attempt_without_overwriting_partial_attempt(self):
         self.bind_batch()
         directory = self.attempt("a")
         directory.mkdir(parents=True)
         (directory / "existing.txt").write_text("Keep original", encoding="utf-8")
         self.stage("b")
-        before = self.snapshot_attempts()
-        self.assertEqual(self.run_cli("--resume"), 1)
-        self.child.assert_not_called()
-        self.assertEqual(self.snapshot_attempts(), before)
-        self.assertEqual(self.summary()["states"], {"pending": 1, "ready_for_flux": 1})
-        self.assertEqual(self.summary()["finished_records"], 0)
+        before = {path: data for path, data in self.snapshot_attempts().items()
+                  if path.startswith("runs/a/attempt_01/")}
+        self.assertEqual(self.run_cli("--resume"), 0)
+        self.assertEqual(self.child.call_count, 1)
+        self.assertEqual({path: data for path, data in self.snapshot_attempts().items()
+                          if path.startswith("runs/a/attempt_01/")}, before)
+        self.assertEqual(self.summary()["states"], {"ready_for_flux": 2})
+        self.assertEqual(self.summary()["results"]["a"]["attempts_used"], 2)
+        self.assertTrue((self.attempt("a", 2) / "retry_context.json").is_file())
 
     def test_ready_does_not_trigger_stop_on_invalid(self):
         self.bind_batch()
@@ -221,15 +244,53 @@ class TestFluxBatch(unittest.TestCase):
         self.assertEqual(self.child.call_count, 1)
         self.assertEqual(self.summary()["finished_records"], 0)
 
-    def test_invalid_and_pause_keep_remaining_scope_explicit(self):
-        self.bind_batch()
-        self.stage("a", "invalid")
-        self.assertEqual(self.run_cli("--resume", "--stop-on-invalid"), 1)
-        self.assertEqual(self.summary()["states"], {"invalid": 1, "not_dispatched": 1})
+    def test_invalid_is_retried_with_previous_validation_errors(self):
+        self.bind_batch(["a"])
+        self.stage("a", "invalid", error="Step assembly: Undelivered evidence source S0007",
+                   schema_errors=["Additional properties are not allowed ('type' was unexpected)"],
+                   validation_errors=[])
+        original = {path: data for path, data in self.snapshot_attempts().items()
+                    if path.startswith("runs/a/attempt_01/")}
+        self.assertEqual(self.run_cli("--resume", "--cases", "a"), 0)
+        self.assertEqual(self.child.call_count, 1)
+        self.assertEqual({path: data for path, data in self.snapshot_attempts().items()
+                          if path.startswith("runs/a/attempt_01/")}, original)
+        retry = run_batch.read_json(self.attempt("a", 2) / "retry_context.json")
+        self.assertEqual(retry["previous_attempt"], "attempt_01")
+        self.assertTrue(any("Undelivered evidence source S0007" in error for error in retry["errors"]))
+        self.assertIn("Additional properties are not allowed ('type' was unexpected)",
+                      retry["schema_errors"])
+        self.assertTrue(any("已登记送达" in hint for hint in retry["repair_hints"]))
+        self.assertEqual(self.summary()["state"], "prepared")
+        self.assertEqual(self.summary()["results"]["a"]["state"], "ready_for_flux")
+
+    def test_retry_hints_cover_windows_schema_contamination_and_coverage_errors(self):
+        hints = run_batch.repair_hints([
+            "Schema $.goals[0].extra: unexpected field",
+            "affected baseline needs rerun, pending, precondition_blocked",
+            "complete review lacks complete runtime access events",
+        ])
+        self.assertTrue(any("global_summary" in hint for hint in hints))
+        self.assertTrue(any("baseline" in hint for hint in hints))
+        self.assertTrue(any("coverage" in hint for hint in hints))
+
+    def test_retry_budget_exhaustion_is_explicit_and_terminal(self):
+        self.bind_batch(["a"], max_attempts=2)
+        self.stage("a", "invalid", error="Still invalid")
+        self.stage("a", "invalid", index=2, error="Still invalid after retry")
+        self.assertEqual(self.run_cli("--resume", "--cases", "a", "--max-attempts", "2"), 1)
         self.child.assert_not_called()
-        self.assertFalse(self.attempt("b").exists())
+        record = self.summary()["results"]["a"]
+        self.assertEqual(record["state"], "unresolved_after_retries")
+        self.assertEqual(record["last_state"], "invalid")
+        self.assertTrue(record["retry_exhausted"])
+        self.assertEqual(self.summary()["state"], "completed_with_unresolved")
+
+    def test_pause_keeps_remaining_scope_explicit(self):
+        self.bind_batch()
         (self.output / "PAUSE").touch()
         self.assertEqual(self.run_cli("--resume"), 1)
+        self.assertEqual(self.summary()["states"], {"not_dispatched": 2})
         self.child.assert_not_called()
         self.assertFalse(self.attempt("b").exists())
 
@@ -267,8 +328,8 @@ class TestFluxBatch(unittest.TestCase):
         self.stage("b", "invalid")
         before = self.snapshot_attempts()
         self.assertEqual(self.run_cli("--collect"), 1)
-        self.assertEqual(self.summary()["state"], "completed")
-        self.assertEqual(self.summary()["finished_records"], 2)
+        self.assertEqual(self.summary()["state"], "awaiting_retry")
+        self.assertEqual(self.summary()["finished_records"], 1)
         self.assertEqual(self.summary()["states"], {"validated": 1, "invalid": 1})
         self.child.assert_not_called()
         self.assertEqual(self.snapshot_attempts(), before)
@@ -310,81 +371,185 @@ class TestFluxBatch(unittest.TestCase):
         (self.attempt("a") / "status.json").unlink()
         (self.attempt("b") / "flux_task.md").unlink()
         self.assertEqual(self.run_cli("--collect"), 1)
-        self.assertEqual(self.summary()["states"], {"ready_for_flux": 1, "pending": 1})
+        self.assertEqual(self.summary()["states"], {"ready_for_flux": 1, "runtime_failed": 1})
         self.assertEqual(self.summary()["finished_records"], 0)
         self.child.assert_not_called()
 
-    def test_finalize_leaves_missing_or_incomplete_tasks_untouched(self):
+    def test_finalize_incomplete_submission_creates_retry_without_changing_old_attempt(self):
         self.bind_batch()
         self.stage("a")
         workspace = self.attempt("a") / "workspace"
         save(workspace / "checkpoint_plan.json", {})
         save(workspace / "global_summary.json", {})
         save(workspace / "step_judgments/step_001.json", {})
-        before = self.snapshot_attempts()
+        before = {path: data for path, data in self.snapshot_attempts().items()
+                  if path.startswith("runs/a/attempt_01/")}
         self.assertEqual(self.run_cli("--finalize"), 1)
-        self.child.assert_not_called()
-        self.assertEqual(self.snapshot_attempts(), before)
-        self.assertEqual(self.summary()["finished_records"], 0)
+        self.assertEqual(self.child.call_count, 1)
+        self.assertEqual({path: data for path, data in self.snapshot_attempts().items()
+                          if path.startswith("runs/a/attempt_01/")}, before)
         self.assertEqual(self.summary()["states"], {"ready_for_flux": 1, "not_dispatched": 1})
+        self.assertEqual(self.summary()["results"]["a"]["attempts_used"], 2)
+        retry = run_batch.read_json(self.attempt("a", 2) / "retry_context.json")
+        self.assertIn("before all required submissions were complete", retry["errors"][0])
 
-    def test_finalize_nonzero_ready_and_zero_stdout_do_not_fake_validation(self):
+    def test_finalize_ready_without_local_check_triggers_retry_not_validation(self):
         self.bind_batch()
         self.stage("a")
         self.stage("b")
         self.submit("a")
+        self.submit("b")
         status_before = (self.attempt("a") / "status.json").read_bytes()
-        for returncode in (1, 0):
-            with self.subTest(returncode=returncode):
-                self.child.reset_mock()
-                def still_ready(command, **kwargs):
-                    self.assertEqual(command[-1], "--finalize")
-                    kwargs["stdout"].write(b'{"state":"validated"}\n')
-                    return subprocess.CompletedProcess(command, returncode)
-                self.child.side_effect = still_ready
-                self.assertEqual(self.run_cli("--finalize"), 1)
-                self.assertEqual(self.child.call_count, 1)
-                self.assertEqual(self.summary()["finished_records"], 0)
-                self.assertEqual(self.summary()["states"], {"ready_for_flux": 2})
-                self.assertEqual((self.attempt("a") / "status.json").read_bytes(), status_before)
+        def still_ready(command, **kwargs):
+            kwargs["stdout"].write(b'{"state":"validated"}\n')
+            if "--finalize" in command:
+                return subprocess.CompletedProcess(command, 1)
+            return self.prepare(command, **kwargs)
+        self.child.side_effect = still_ready
+        self.assertEqual(self.run_cli("--finalize"), 1)
+        self.assertEqual(self.child.call_count, 4)
+        self.assertEqual(self.summary()["finished_records"], 0)
+        self.assertEqual(self.summary()["states"], {"ready_for_flux": 2})
+        self.assertEqual({record["attempts_used"] for record in self.summary()["results"].values()}, {2})
+        self.assertEqual((self.attempt("a") / "status.json").read_bytes(), status_before)
         self.assertFalse((self.attempt("a") / "result.json").exists())
 
-    def test_finalize_uses_real_status_and_preserves_existing_final_result(self):
+    def test_finalize_invalid_schedules_fresh_retry_and_then_validates(self):
         self.bind_batch()
         self.stage("a")
         self.submit("a")
         self.stage("b", "validated")
         before_b = {p.name: p.read_bytes() for p in self.attempt("b").iterdir() if p.is_file()}
-        for final_state in ("invalid", "validated"):
-            with self.subTest(final_state=final_state):
-                self.stage("a")
-                self.child.reset_mock()
-                def finalize(command, **kwargs):
-                    self.assertEqual(command[-1], "--finalize")
-                    self.assertEqual(command[command.index("--case") + 1], "a")
-                    self.stage("a", final_state)
-                    return subprocess.CompletedProcess(command, 0 if final_state == "validated" else 1)
-                self.child.side_effect = finalize
-                self.assertEqual(self.run_cli("--finalize"), 0 if final_state == "validated" else 1)
-                self.assertEqual(self.child.call_count, 1)
-                self.assertEqual(self.summary()["finished_records"], 2)
-                self.assertEqual(self.summary()["results"]["a"]["state"], final_state)
-                self.assertEqual({p.name: p.read_bytes() for p in self.attempt("b").iterdir() if p.is_file()}, before_b)
+        attempt_one = {p.name: p.read_bytes() for p in self.attempt("a").iterdir()
+                       if p.is_file() and p.name != "status.json"}
 
-    def test_finalize_never_calls_case_with_changed_binding(self):
+        def finalize_then_prepare(command, **kwargs):
+            if "--finalize" in command:
+                self.assertEqual(command[command.index("--case") + 1], "a")
+                self.stage("a", "invalid", error="Step assembly: Undelivered evidence source S0042")
+                return subprocess.CompletedProcess(command, 1)
+            return self.prepare(command, **kwargs)
+
+        self.child.side_effect = finalize_then_prepare
+        self.assertEqual(self.run_cli("--finalize"), 1)
+        self.assertEqual(self.child.call_count, 2)
+        self.assertEqual(self.summary()["states"], {"ready_for_flux": 1, "validated": 1})
+        self.assertEqual(self.summary()["finished_records"], 1)
+        self.assertEqual({p.name: p.read_bytes() for p in self.attempt("a").iterdir()
+                          if p.is_file() and p.name != "status.json"},
+                         attempt_one)
+        self.assertEqual(run_batch.read_json(self.attempt("a") / "status.json")["state"], "invalid")
+        self.assertEqual({p.name: p.read_bytes() for p in self.attempt("b").iterdir() if p.is_file()}, before_b)
+        retry = run_batch.read_json(self.attempt("a", 2) / "retry_context.json")
+        self.assertEqual(retry["previous_state"], "invalid")
+        self.assertTrue(any("Undelivered evidence source S0042" in error for error in retry["errors"]))
+
+        self.stage("a", "validated", index=2)
+        self.assertEqual(self.run_cli("--finalize"), 0)
+        self.assertEqual(self.child.call_count, 2)
+        self.assertEqual(self.summary()["state"], "completed")
+        self.assertEqual(self.summary()["states"], {"validated": 2})
+
+    def test_finalize_uses_real_validated_status_and_preserves_other_result(self):
         self.bind_batch()
         self.stage("a")
         self.submit("a")
-        save(self.attempt("a") / "input_binding.json", {"case_id": "a", "manifest_sha256": "wrong"})
-        self.assertEqual(self.run_cli("--finalize"), 1)
-        self.child.assert_not_called()
-        self.assertEqual(self.summary()["results"]["a"]["state"], "runtime_failed")
+        self.stage("b", "validated")
+        before_b = {p.name: p.read_bytes() for p in self.attempt("b").iterdir() if p.is_file()}
+        def finalize(command, **kwargs):
+            self.stage("a", "validated")
+            return subprocess.CompletedProcess(command, 0)
+        self.child.side_effect = finalize
+        self.assertEqual(self.run_cli("--finalize"), 0)
+        self.assertEqual(self.child.call_count, 1)
+        self.assertEqual(self.summary()["finished_records"], 2)
+        self.assertEqual(self.summary()["results"]["a"]["state"], "validated")
+        self.assertEqual({p.name: p.read_bytes() for p in self.attempt("b").iterdir() if p.is_file()},
+                         before_b)
 
-    def test_launcher_timeout_releases_batch_lock_and_preserves_other_scope(self):
+    def test_finalize_changed_binding_creates_retry_without_touching_old_attempt(self):
+        self.bind_batch(["a"], max_attempts=2)
+        self.stage("a")
+        self.submit("a")
+        save(self.attempt("a") / "input_binding.json", {"case_id": "a", "manifest_sha256": "wrong"})
+        original = {path: data for path, data in self.snapshot_attempts().items()
+                    if path.startswith("runs/a/attempt_01/")}
+        self.assertEqual(self.run_cli("--finalize", "--cases", "a", "--max-attempts", "2"), 1)
+        self.assertEqual(self.child.call_count, 1)
+        self.assertEqual({path: data for path, data in self.snapshot_attempts().items()
+                          if path.startswith("runs/a/attempt_01/")}, original)
+        self.assertEqual(self.summary()["results"]["a"]["attempts_used"], 2)
+        retry = run_batch.read_json(self.attempt("a", 2) / "retry_context.json")
+        self.assertTrue(any("input binding differs" in error for error in retry["errors"]))
+
+    def test_corrupt_status_creates_retry_instead_of_stalling(self):
+        self.bind_batch(["a"])
+        self.stage("a")
+        (self.attempt("a") / "status.json").write_text("not JSON", encoding="utf-8")
+        original = {path: data for path, data in self.snapshot_attempts().items()
+                    if path.startswith("runs/a/attempt_01/")}
+        self.assertEqual(self.run_cli("--resume", "--cases", "a"), 0)
+        self.assertEqual(self.child.call_count, 1)
+        self.assertEqual({path: data for path, data in self.snapshot_attempts().items()
+                          if path.startswith("runs/a/attempt_01/")}, original)
+        self.assertEqual(self.summary()["results"]["a"]["attempts_used"], 2)
+        retry = run_batch.read_json(self.attempt("a", 2) / "retry_context.json")
+        self.assertTrue(any("Existing status is unreadable" in error for error in retry["errors"]))
+
+    def test_non_object_status_creates_retry_instead_of_crashing(self):
+        self.bind_batch(["a"])
+        self.stage("a")
+        save(self.attempt("a") / "status.json", ["not", "an", "object"])
+        self.assertEqual(self.run_cli("--resume", "--cases", "a"), 0)
+        self.assertEqual(self.child.call_count, 1)
+        self.assertEqual(self.summary()["results"]["a"]["attempts_used"], 2)
+        retry = run_batch.read_json(self.attempt("a", 2) / "retry_context.json")
+        self.assertTrue(any("no valid state" in error for error in retry["errors"]))
+
+    def test_corrupt_attempt_exhausts_budget_as_unresolved_not_awaiting_flux(self):
+        self.bind_batch(["a"], max_attempts=1)
+        self.stage("a")
+        save(self.attempt("a") / "status.json", {"case_id": "a", "state": "mystery"})
+        self.assertEqual(self.run_cli("--resume", "--cases", "a", "--max-attempts", "1"), 1)
+        self.child.assert_not_called()
+        record = self.summary()["results"]["a"]
+        self.assertEqual(record["state"], "unresolved_after_retries")
+        self.assertEqual(record["last_state"], "runtime_failed")
+        self.assertTrue(record["retry_exhausted"])
+        self.assertEqual(self.summary()["state"], "completed_with_unresolved")
+
+    def test_launcher_timeout_before_attempt_directory_is_bounded(self):
+        self.bind_batch(["a"], max_attempts=2)
+        self.child.side_effect = subprocess.TimeoutExpired(["local preparation"], 1)
+        self.assertEqual(self.run_cli("--resume", "--cases", "a", "--max-attempts", "2"), 1)
+        first = {path: data for path, data in self.snapshot_attempts().items()
+                 if path.startswith("runs/a/attempt_01/")}
+        self.assertTrue((self.attempt("a") / "launch_failure.json").is_file())
+        self.assertEqual(self.summary()["state"], "awaiting_retry")
+
+        self.assertEqual(self.run_cli("--resume", "--cases", "a", "--max-attempts", "2"), 1)
+        self.assertEqual(self.child.call_count, 2)
+        self.assertEqual({path: data for path, data in self.snapshot_attempts().items()
+                          if path.startswith("runs/a/attempt_01/")}, first)
+        self.assertEqual(self.summary()["results"]["a"]["state"], "unresolved_after_retries")
+
+        self.assertEqual(self.run_cli("--resume", "--cases", "a", "--max-attempts", "2"), 1)
+        self.assertEqual(self.child.call_count, 2)
+
+    def test_launcher_nonzero_without_attempt_directory_is_bounded(self):
+        self.bind_batch(["a"], max_attempts=1)
+        self.child.side_effect = lambda command, **kwargs: subprocess.CompletedProcess(command, 2)
+        self.assertEqual(self.run_cli("--resume", "--cases", "a", "--max-attempts", "1"), 1)
+        self.assertEqual(self.child.call_count, 1)
+        self.assertTrue((self.attempt("a") / "launch_failure.json").is_file())
+        self.assertEqual(self.summary()["results"]["a"]["state"], "unresolved_after_retries")
+        self.assertEqual(self.summary()["state"], "completed_with_unresolved")
+
+    def test_launcher_timeout_releases_batch_lock_after_scope_attempts(self):
         self.child.side_effect = subprocess.TimeoutExpired(["local preparation"], 1)
         self.assertEqual(self.run_cli("--stop-on-invalid"), 1)
-        self.assertEqual(self.child.call_count, 1)
-        self.assertEqual(self.summary()["states"], {"runtime_failed": 1, "not_dispatched": 1})
+        self.assertEqual(self.child.call_count, 2)
+        self.assertEqual(self.summary()["states"], {"runtime_failed": 2})
         self.assertFalse((self.output / "batch.lock").exists())
 
 

@@ -23,6 +23,121 @@ function References($value) {
   }
  } elseif($value -is [System.Collections.IEnumerable] -and $value -isnot [string]) {foreach($v in $value){References $v}}
 }
+function Assert-JsonSchema($value,$schema,[string]$path) {
+ if($null -eq $schema){return}
+ $schemaNames=@($schema.PSObject.Properties.Name)
+ if($schemaNames -ccontains 'anyOf') {
+  $matched=$false
+  foreach($option in @($schema.anyOf)) {
+   try {Assert-JsonSchema $value $option $path;$matched=$true;break} catch {}
+  }
+  if(-not $matched){throw "Schema $path: value does not match any allowed variant"}
+ }
+ if($schemaNames -ccontains 'const' -and $value -cne $schema.const){throw "Schema $path: expected constant $($schema.const)"}
+ if($schemaNames -ccontains 'enum' -and @($schema.enum) -cnotcontains $value){throw "Schema $path: value is not an allowed enum"}
+ if($schemaNames -ccontains 'type') {
+  switch([string]$schema.type) {
+   'object' {if($value -isnot [System.Management.Automation.PSCustomObject]){throw "Schema $path: expected object"}}
+   'array' {if($value -isnot [System.Array]){throw "Schema $path: expected array"}}
+   'string' {if($value -isnot [string]){throw "Schema $path: expected string"}}
+   'integer' {if(($value -isnot [int]) -and ($value -isnot [long])){throw "Schema $path: expected integer"}}
+   'number' {if(($value -isnot [int]) -and ($value -isnot [long]) -and ($value -isnot [double])){throw "Schema $path: expected number"}}
+   'boolean' {if($value -isnot [bool]){throw "Schema $path: expected boolean"}}
+   'null' {if($null -ne $value){throw "Schema $path: expected null"}}
+  }
+ }
+ if($schema.type -eq 'string') {
+  if($schemaNames -ccontains 'minLength' -and ([string]$value).Length -lt [int]$schema.minLength){throw "Schema $path: string is too short"}
+  if($schemaNames -ccontains 'pattern' -and -not [regex]::IsMatch([string]$value,[string]$schema.pattern)){throw "Schema $path: string does not match pattern"}
+ }
+ if($schemaNames -ccontains 'minimum' -and [double]$value -lt [double]$schema.minimum){throw "Schema $path: number is below minimum"}
+ if($schema.type -eq 'array') {
+  if($schemaNames -ccontains 'minItems' -and @($value).Count -lt [int]$schema.minItems){throw "Schema $path: array has too few items"}
+  if($schemaNames -ccontains 'maxItems' -and @($value).Count -gt [int]$schema.maxItems){throw "Schema $path: array has too many items"}
+  if($schemaNames -ccontains 'items') {for($i=0;$i -lt @($value).Count;$i++){Assert-JsonSchema $value[$i] $schema.items ($path+'['+$i+']')}}
+  if($schemaNames -ccontains 'uniqueItems' -and $schema.uniqueItems) {
+   $seen=[System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+   foreach($item in @($value)) {
+    $key=$item|ConvertTo-Json -Compress -Depth 20
+    if(-not $seen.Add($key)){throw "Schema $path: array items must be unique"}
+   }
+  }
+ }
+ if($value -is [System.Management.Automation.PSCustomObject]) {
+  $actual=@($value.PSObject.Properties.Name)
+  if($schemaNames -ccontains 'required') {foreach($name in @($schema.required)){if($actual -cnotcontains [string]$name){throw "Schema $path.$name: missing required field"}}}
+  if($schemaNames -ccontains 'properties') {
+   $declared=@($schema.properties.PSObject.Properties.Name)
+   if($schemaNames -ccontains 'additionalProperties' -and $schema.additionalProperties -eq $false) {
+    foreach($name in $actual){if($declared -cnotcontains $name){throw "Schema $path.$name: unexpected field"}}
+   }
+   foreach($property in $schema.properties.PSObject.Properties) {
+    if($actual -ccontains $property.Name){Assert-JsonSchema $value.($property.Name) $property.Value ($path+'.'+$property.Name)}
+   }
+  } elseif($schemaNames -ccontains 'additionalProperties' -and $schema.additionalProperties -is [System.Management.Automation.PSCustomObject]) {
+   foreach($property in $value.PSObject.Properties){Assert-JsonSchema $property.Value $schema.additionalProperties ($path+'.'+$property.Name)}
+  }
+ }
+}
+function Get-RuntimeMode {
+ $out=Split-Path $work -Parent
+ $bindingPath=Join-Path $out 'input_binding.json'
+ if(Test-Path $bindingPath){$binding=Read-Json $bindingPath;if([string]$binding.execution_backend -ceq 'flux_native'){return 'flux'}}
+ $launchPath=Join-Path $out 'launch.json'
+ if(Test-Path $launchPath){$launch=Read-Json $launchPath;if([string]$launch.family -ceq 'native_d60'){return 'native'}}
+ if(Test-Path (Join-Path $out 'delivery_tickets')){return 'flux'}
+ if(Test-Path (Join-Path $out 'access_receipt.json')){return 'native'}
+ return 'legacy'
+}
+function Get-DeliveredImageIds($index) {
+ $mode=Get-RuntimeMode
+ if($mode -ceq 'legacy'){return $null}
+ $sources=@($index.sources)
+ $bySource=@{}
+ foreach($source in $sources){$bySource[[string]$source.source]=[string]$source.source_id}
+ $delivered=@()
+ if($mode -ceq 'flux') {
+  $tickets=Join-Path (Split-Path $work -Parent) 'delivery_tickets'
+  foreach($path in @(Get-ChildItem -LiteralPath $tickets -Filter '*.json' -File)) {
+   $record=Read-Json $path.FullName
+   if($record.confirmed -isnot [bool] -or -not $record.confirmed){continue}
+   if([string]$record.kind -cne 'image'){continue}
+   if([string]$record.native_tool -cne 'view_image' -or [string]::IsNullOrWhiteSpace([string]$record.tool_ref)){throw 'Gallery image ticket was not confirmed by view_image'}
+   $source=$sources|Where-Object {[string]$_.source_id -ceq [string]$record.resource}|Select-Object -First 1
+   if($null -eq $source -or [string]$source.kind -cne 'image'){throw 'Confirmed image ticket names an unknown gallery source'}
+   $imagePath=Join-Path $work ([string]$source.source)
+   if(-not (Test-Path -LiteralPath $imagePath -PathType Leaf)){throw ('Delivered gallery image is missing: '+$record.resource)}
+   $digest=(Get-FileHash -LiteralPath $imagePath -Algorithm SHA256).Hash.ToLowerInvariant()
+   if($digest -cne [string]$record.sha256){throw ('Delivered gallery image changed after confirmation: '+$record.resource)}
+   $delivered+=[string]$record.resource
+  }
+ } else {
+  $receiptPath=Join-Path (Split-Path $work -Parent) 'access_receipt.json'
+  if(-not (Test-Path $receiptPath)){throw 'Native access receipt is not available yet; deliver evidence first'}
+  $receipt=Read-Json $receiptPath
+  foreach($event in @($receipt.events)) {
+   if($event.success -is [bool] -and $event.success -and [string]$event.operation -ceq 'deliver_image' -and $event.content_complete -is [bool] -and $event.content_complete -and -not $event.truncated) {
+    if($bySource.ContainsKey([string]$event.source)){$delivered+=$bySource[[string]$event.source]}
+   }
+  }
+ }
+ return ,@($delivered|Select-Object -Unique)
+}
+function Assert-CitedImagesDelivered($index,$evidence) {
+ $delivered=Get-DeliveredImageIds $index
+ if($null -eq $delivered){return}
+ $images=@($index.sources|Where-Object {[string]$_.kind -ceq 'image'}|ForEach-Object {[string]$_.source_id})
+ $missing=@()
+ foreach($item in @($evidence)){if($images -ccontains [string]$item.source_id -and $delivered -cnotcontains [string]$item.source_id){$missing+=[string]$item.source_id}}
+ if($missing.Count){throw ('Undelivered cited images: '+(@($missing|Select-Object -Unique) -join ',')+'; call read and confirm the ticket before using them as evidence')}
+}
+function Assert-GalleryDelivered($index) {
+ $delivered=Get-DeliveredImageIds $index
+ if($null -eq $delivered){return}
+ $expected=@($index.sources|Where-Object {[string]$_.kind -ceq 'image'}|ForEach-Object {[string]$_.source_id})
+ $missing=@($expected|Where-Object {$delivered -cnotcontains $_})
+ if($missing.Count){throw ('Gallery images not delivered: '+($missing -join ',')+'; every gallery image must be read, viewed and confirmed')}
+}
 function Get-IoEvents {
  $path=Join-Path $work 'io_events.jsonl'
  if(-not (Test-Path $path)){return @()}
@@ -167,6 +282,7 @@ try {
    if(@('before_action','after_action','decision','execution','metadata','final_observation','unknown') -cnotcontains $ev.phase){throw 'Invalid phase'}
    if([string]::IsNullOrWhiteSpace([string]$ev.locator) -or [string]::IsNullOrWhiteSpace([string]$ev.observation)){throw 'Empty evidence observation'}
   }
+  Assert-CitedImagesDelivered $index @($value.evidence)
   $target=Join-Path $work ('step_judgments/step_{0:D3}.json' -f [int]$value.step)
   Save-Json $target $value
   $ids=@(for($j=1;$j -le @($value.evidence).Count;$j++){ 'E{0:D2}_{1}' -f [int]$value.step,$j })
@@ -181,6 +297,7 @@ try {
   $value=$Json|ConvertFrom-Json
   $schema=Read-Json (Join-Path $work 'global_summary.schema.json')
   Require-Fields $value @($schema.required)
+  Assert-JsonSchema $value $schema '$'
   Assert-GoalAlignment $plan $value
   Save-Json (Join-Path $work 'global_summary.json') $value
   Log-Event $true 'Saved global semantic judgment'
@@ -191,6 +308,9 @@ try {
   Assert-RevisionFiles $steps
   $known=@($index.sources|ForEach-Object {$_.source_id})
   $global=Read-Json (Join-Path $work 'global_summary.json')
+  $globalSchema=Read-Json (Join-Path $work 'global_summary.schema.json')
+  Assert-JsonSchema $global $globalSchema '$'
+  Assert-GalleryDelivered $index
   Assert-GoalAlignment $plan $global
   $ids=@()
   foreach($step in $steps) {
@@ -199,7 +319,7 @@ try {
   }
   $bad=@(References $global|Where-Object {$ids -cnotcontains $_}|Select-Object -Unique)
   if($bad.Count){throw ('Unknown evidence refs: '+($bad -join ','))}
-  Log-Event $true 'Local JSON and reference check; final strict validator not invoked'
-  @{ok=$true;steps=$steps.Count;evidence_ids=$ids.Count;strict_validation='caller_only'}|ConvertTo-Json -Compress
+  Log-Event $true 'Local strict schema, delivery and reference preflight passed'
+  @{ok=$true;steps=$steps.Count;evidence_ids=$ids.Count;strict_validation='local_structural_preflight'}|ConvertTo-Json -Compress
  }
 } catch {Log-Event $false $_.Exception.Message;Write-Error $_.Exception.Message;exit 1}

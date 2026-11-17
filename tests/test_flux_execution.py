@@ -50,6 +50,39 @@ class FluxExecutionTests(unittest.TestCase):
         self.assertNotIn("model_provider", flux.read_json(self.out / "input_binding.json"))
         self.assertFalse((self.out / "pid.json").exists())
 
+    def test_staged_inventory_matches_the_bytes_delivered_in_the_workspace(self):
+        workspace = self.out / "workspace"
+        index = flux.read_json(workspace / "input_index.json")
+        for entry in index["sources"]:
+            target = workspace / entry["source"]
+            self.assertTrue(target.is_file(), entry["source"])
+            self.assertEqual(flux.sha(target), entry["sha256"], entry["source"])
+
+    def test_retry_context_is_frozen_and_rendered_without_previous_prediction(self):
+        out = self.fixture.path.parent / "retry-flux"
+        context = {
+            "schema": "flux-retry-context-v1", "case_id": "synthetic",
+            "previous_attempt": "attempt_01", "previous_state": "invalid",
+            "attempt_index": 2, "max_attempts": 3,
+            "errors": ["Step assembly: Undelivered evidence source S0002"],
+            "schema_errors": [], "validation_errors": [],
+            "repair_hints": ["read and confirm the missing source"],
+            "instructions": ["reanalyze from original evidence"],
+        }
+        flux.prepare_case(self.loaded, out, self.binding, context)
+        binding = flux.read_json(out / "input_binding.json")
+        self.assertEqual(binding["retry_of"], "attempt_01")
+        self.assertEqual(binding["attempt_index"], 2)
+        self.assertEqual(flux.read_json(out / "retry_context.json"), context)
+        task = (out / "flux_task.md").read_text(encoding="utf-8")
+        self.assertIn("自动重试上下文", task)
+        self.assertIn("retry_context.json", task)
+        self.assertIn("不要读取或复制", task)
+        flux.validate_session(out)
+        (out / "retry_context.json").write_text("{}", encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "Retry context changed"):
+            flux.validate_session(out)
+
     def test_read_is_gated_by_checkpoint(self):
         with self.assertRaisesRegex(ValueError, "checkpoint"):
             flux.offer_delivery(self.out, "logs/page_001.txt")
@@ -107,6 +140,16 @@ class FluxExecutionTests(unittest.TestCase):
             self.assertEqual(flux.finalize_case(self.out)["state"], "ready_for_flux")
         self.assertFalse((self.out / "result.json").exists())
 
+    def test_finalize_validates_against_the_staged_workspace(self):
+        self.checkpoint()
+        events = self.out / "workspace/io_events.jsonl"
+        with events.open("a", encoding="utf-8") as stream:
+            stream.write(json.dumps({"mode": "check", "accepted": True}) + "\n")
+        with patch.object(flux.engine, "assemble", return_value={}), \
+                patch.object(flux.engine, "finish", return_value={"state": "validated"}) as finish:
+            flux.finalize_case(self.out)
+        self.assertEqual(finish.call_args.kwargs["evidence_root"], (self.out / "workspace").resolve())
+
     def test_new_entry_never_resolves_a_model_or_launches_a_model_process(self):
         args = ["run_case.py", "--manifest", str(self.fixture.path), "--case", "synthetic",
                 "--out", str(self.fixture.path.parent / "second")]
@@ -134,6 +177,34 @@ class FluxExecutionTests(unittest.TestCase):
         flux.atomic_json(path, receipt)
         self.assertIn("access receipt producer/attempt mismatch",
                       validator.validate_access_receipt(result, path, loaded[0]["evidence_root"]))
+
+    def test_local_preflight_validates_receipt_coverage_and_cleans_its_temp_file(self):
+        import importlib.util
+        workspace = self.out / "workspace"
+        spec = importlib.util.spec_from_file_location(
+            "flux_local_preflight", workspace / ".preflight/preflight.py"
+        )
+        preflight = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(preflight)
+        index = flux.read_json(workspace / "input_index.json")
+        seen = {}
+        def validate(result, **kwargs):
+            path = kwargs["access_receipt"]
+            self.assertTrue(path.is_file())
+            seen["receipt"] = json.loads(path.read_text(encoding="utf-8"))
+            seen["path"] = path
+            seen["evidence_root"] = kwargs["evidence_root"]
+            return []
+        with patch.object(preflight.assembler, "assemble", return_value={}), \
+                patch.object(preflight.canonical_normalization, "normalize_prediction"), \
+                patch.object(preflight.OutputProtocol, "compile",
+                             return_value={"evidence": [], "error_candidates": [],
+                                           "outcome": {}}), \
+                patch.object(preflight.final_validator, "validate_result", side_effect=validate):
+            preflight.strict_preflight(workspace, index)
+        self.assertEqual(seen["receipt"]["producer"], "harness")
+        self.assertEqual(seen["evidence_root"], workspace.resolve())
+        self.assertFalse(seen["path"].exists())
 
 
 if __name__ == "__main__":

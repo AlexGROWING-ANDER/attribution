@@ -153,6 +153,8 @@ def main() -> int:
     parser.add_argument("--case", required=True)
     parser.add_argument("--out", required=True, type=Path)
     parser.add_argument("--wall", type=int, default=3600, help="Native Flux task time budget")
+    parser.add_argument("--retry-context", type=Path,
+                        help="Validation feedback from the previous attempt for a fresh retry")
     parser.add_argument("--preflight", action="store_true", help="No inference or device actions")
     parser.add_argument("--finalize", action="store_true", help="Validate completed Flux submissions")
     args = parser.parse_args()
@@ -160,6 +162,8 @@ def main() -> int:
         parser.error("--wall must be positive")
     if args.preflight and args.finalize:
         parser.error("--preflight and --finalize are mutually exclusive")
+    if args.retry_context and (args.preflight or args.finalize):
+        parser.error("--retry-context is only valid while preparing a fresh attempt")
     verify_release()
     for expected, path in (
         (args.release_sha256, REPO / "RELEASE_MANIFEST.json"),
@@ -186,12 +190,13 @@ def main() -> int:
             raise ValueError("Finalize inputs differ from the dispatched case")
         status = finalize_case(args.out.resolve())
     else:
+        retry_context = read_json(args.retry_context.resolve()) if args.retry_context else None
         status = prepare_case(loaded, args.out.resolve(), {
             "manifest_path": str(manifest_path), "manifest_sha256": manifest_digest,
             "runtime_manifest_sha256": sha256(REPO / "RELEASE_MANIFEST.json"),
             "skill_manifest_sha256": sha256(ROOT / "skills/v3/manifest.json"),
             "wall_seconds": args.wall,
-        })
+        }, retry_context)
     print(json.dumps(status, ensure_ascii=False))
     if args.finalize:
         return 0 if status["state"] == "validated" else 1

@@ -1,6 +1,6 @@
 """Step-wise judgments and deterministic output assembly; no GT or old answers."""
 from pathlib import Path
-import copy,hashlib,json,re
+import copy,hashlib,json,re,shutil
 from jsonschema import Draft202012Validator
 
 STEP_SCHEMA={"type":"object","additionalProperties":False,"required":["step","verdict","summary","evidence"],"properties":{
@@ -168,7 +168,22 @@ def build_prompt(case, protocol, pages, workspace):
     stage_contract(case, protocol, pages, workspace)
     return render_prompt(case["identity"])
 
-def assemble(workspace,case,receipt):
+
+def stage_local_preflight(workspace):
+    """Stage the frozen assembler/validator support used by io.py check."""
+    engine = Path(__file__).resolve().parent
+    skill = engine.parent / "skills/v3"
+    destination = Path(workspace) / ".preflight"
+    destination.mkdir(parents=True, exist_ok=False)
+    for name in ("preflight.py", "stepwise_support_v2.py", "validate_result.py", "normalization.py"):
+        shutil.copyfile(engine / name, destination / name)
+    shutil.copytree(engine / "harness", destination / "harness",
+                    ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    shutil.copytree(skill / "gui-trajectory-attribution/references", destination / "references")
+    shutil.copyfile(skill / "manifest.json", destination / "skill_manifest.json")
+    return destination
+
+def assemble(workspace,case,receipt,*,write_audit=True):
     workspace=Path(workspace);schema_validator=Draft202012Validator(STEP_SCHEMA)
     checkpoint_plan,checkpoint_sha,io_events,checkpoint_event=load_submitted_checkpoint_plan(workspace,case)
     records=[];evidence=[];process=[];catalog={e['source_id']:e for e in case['inventory']}
@@ -196,7 +211,8 @@ def assemble(workspace,case,receipt):
         for j,observation in enumerate(value['evidence'],1):
             source=catalog.get(observation['source_id'])
             if source is None:raise ValueError('Unknown evidence source_id')
-            if source['source'] not in delivered:raise ValueError('Undelivered evidence source')
+            if source['source'] not in delivered:raise ValueError(
+                f"Undelivered evidence source {source['source_id']}; read its page or image and confirm the delivery ticket before citing it")
             identifier=f'E{step:02d}_{j}';ids.append(identifier)
             source_step=source.get('step')
             evidence_step=source_step if source_step is not None else (step if step in source.get('steps',[]) else None)
@@ -221,20 +237,23 @@ def assemble(workspace,case,receipt):
     first_delivery_at=_first_evidence_delivery_at(workspace)
     def before(checkpoint_time,other_time):
         return None if checkpoint_time is None or other_time is None else checkpoint_time<=other_time
-    (workspace.parent/'stepwise_assembly_audit.json').write_text(json.dumps({
-      'records':len(records),'evidence_items':len(evidence),'process_items':len(process),'applied_additive_revisions':applied_revisions,
-      'source_step_mapping':'original inventory only; null image steps preserved','coverage_from_runtime_receipt':True,
-      'model_semantic_fields_unchanged':True,'no_prior_prediction_or_gt':True,'post_validator_model_repair':False,
-      'checkpoint_plan_sha256':checkpoint_sha,'checkpoint_count':len(checkpoint_plan['checkpoints']),
-      'required_checkpoint_ids':[item['id'] for item in checkpoint_plan['checkpoints'] if item['required']],
-      'checkpoint_steps':{item.get('id'):item.get('steps',[]) for item in projection['goals'] if isinstance(item,dict)},
-      'checkpoint_step_ranges':{item.get('id'):item.get('step_range') for item in projection['goals'] if isinstance(item,dict)},
-      'final_goal_ids':[item.get('id') for item in projection['goals'] if isinstance(item,dict)],
-      'checkpoint_goal_alignment':'exact_id_object_requirement_for_required_checkpoints',
-      'checkpoint_submitted_before_step':before(checkpoint_at,first_step_at),
-      'checkpoint_submitted_before_first_derived_view':before(checkpoint_at,first_derive_at),
-      'checkpoint_submitted_before_first_evidence_delivery':before(checkpoint_at,first_delivery_at),
-      'checkpoint_gate_scope':'helper submissions and derived views only; raw file reads are not prevented',
-      'local_verdict_counts':{k:sum(r['verdict']==k for r in records) for k in ('reasonable','error','uncertain')}
-    },ensure_ascii=False,indent=2),encoding='utf-8')
+    if write_audit:
+        audit={
+          'records':len(records),'evidence_items':len(evidence),'process_items':len(process),'applied_additive_revisions':applied_revisions,
+          'source_step_mapping':'original inventory only; null image steps preserved','coverage_from_runtime_receipt':True,
+          'model_semantic_fields_unchanged':True,'no_prior_prediction_or_gt':True,'post_validator_model_repair':False,
+          'checkpoint_plan_sha256':checkpoint_sha,'checkpoint_count':len(checkpoint_plan['checkpoints']),
+          'required_checkpoint_ids':[item['id'] for item in checkpoint_plan['checkpoints'] if item['required']],
+          'checkpoint_steps':{item.get('id'):item.get('steps',[]) for item in projection['goals'] if isinstance(item,dict)},
+          'checkpoint_step_ranges':{item.get('id'):item.get('step_range') for item in projection['goals'] if isinstance(item,dict)},
+          'final_goal_ids':[item.get('id') for item in projection['goals'] if isinstance(item,dict)],
+          'checkpoint_goal_alignment':'exact_id_object_requirement_for_required_checkpoints',
+          'checkpoint_submitted_before_step':before(checkpoint_at,first_step_at),
+          'checkpoint_submitted_before_first_derived_view':before(checkpoint_at,first_derive_at),
+          'checkpoint_submitted_before_first_evidence_delivery':before(checkpoint_at,first_delivery_at),
+          'checkpoint_gate_scope':'helper submissions and derived views only; raw file reads are not prevented',
+          'local_verdict_counts':{k:sum(r['verdict']==k for r in records) for k in ('reasonable','error','uncertain')}
+        }
+        (workspace.parent/'stepwise_assembly_audit.json').write_text(json.dumps(
+            audit,ensure_ascii=False,indent=2),encoding='utf-8')
     return projection

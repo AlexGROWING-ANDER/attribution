@@ -25,19 +25,20 @@ macOS/Linux的Python helper还提供受控派生视图：只允许从已登记�
   → 完整读取图片和日志
   → 按步骤保存局部判断，检查字段、步序和来源
   → 提交全局归因，检查required checkpoint是否原样进入goals、补充证据是否保留原证据前缀
-  → 本地完成检查：步骤、文件、补充证据及引用
+  → 本地严格检查：步骤、文件、补充证据及引用；被拒时最多三个修正循环
   → 程序组装，绑定任务身份、来源和覆盖记录
   → 最终严格校验
-  → status.json：validated／invalid／runtime_failed
+  → validated，或自动创建带 retry_context 的新 attempt
+  → 重试预算耗尽才记录 unresolved_after_retries
 ```
 
-Windows通过PowerShell调用`io.ps1`，macOS/Linux调用`io.py`传递JSON，按数字顺序保存。macOS/Linux启动时会把工作区协议中的`python3`固定为执行器实际使用的Python绝对路径，避免沙箱内`PATH`落到不可用的系统解释器。两条路径都要求先提交`checkpoint_plan.json`：计划只能来自原始指令、身份和任务口径，提交事件绑定文件哈希；未经该提交，step、global、check（以及POSIX derive）都会被拒绝。最终required checkpoint必须与`goals`中的`id/object/requirement`一致。该门禁不阻止直接读取原始文件，实际顺序另写入组装审计。两条路径执行相同的字段、步序、来源和revision前缀检查。POSIX路径额外在`global`保存和`check`通过前执行目标证据预检：`satisfied`或`unsatisfied`目标必须至少引用一个绑定到图片来源的evidence ID，仅有日志或模块自述时拒绝并提示保留`unknown`；Windows helper保持原有行为。单步记录包含`step`、`verdict`、`summary`、`evidence`；`verdict`是局部判断，不直接等于主要根因。
+Windows通过PowerShell调用`io.ps1`，macOS/Linux调用`io.py`传递JSON，按数字顺序保存。macOS/Linux启动时会把工作区协议中的`python3`固定为执行器实际使用的Python绝对路径，避免沙箱内`PATH`落到不可用的系统解释器。两条路径都要求先提交`checkpoint_plan.json`：计划只能来自原始指令、身份和任务口径，提交事件绑定文件哈希；未经该提交，step、global、check（以及POSIX derive）都会被拒绝。最终required checkpoint必须与`goals`中的`id/object/requirement`一致。该门禁不阻止直接读取原始文件，实际顺序另写入组装审计。两条路径执行相同的字段、步序、来源和revision前缀检查，并在`global`与`check`再次执行严格JSON Schema校验。POSIX的`check`还会根据confirmed delivery ticket重建运行期receipt，复用canonical assembler和最终`validate_result`执行本地严格语义预检；未送达的图库图片、标签层级冲突、actor/stage冲突及contamination/decision冲突都会在本地被拒绝。Windows helper同步拦截schema额外字段、未送达图库图片和未知引用，完整语义校验仍由最终化阶段执行。`satisfied`或`unsatisfied`目标必须至少引用一个绑定到图片来源的evidence ID，仅有日志或模块自述时拒绝并提示保留`unknown`。单步记录包含`step`、`verdict`、`summary`、`evidence`；`verdict`是局部判断，不直接等于主要根因。
 
 checkpoint是验收覆盖脚手架，不是证据：不得写入evidence ID，不能单独证明错误，也不能直接选择层级或责任标签。任务执行中由直接证据发现的额外验收项可以继续加入`goals`。
 
 新读取的直接观察可另存为`revision_NNN.json`。原始步骤、verdict和证据前缀保持不变，补充内容追加在后。全局提交和本地完成检查均会检查这项约束，拒绝时返回具体冲突位置。
 
-模型不覆盖已保存的基础步骤。局部拒绝保留记录，纠正预算按提交协议执行。最终严格校验由调用方执行，不向模型反馈结果回修。
+模型不覆盖已保存的基础步骤。局部拒绝保留记录，纠正预算按提交协议执行。最终严格校验由调用方执行；若仍失败，`run_batch` 不把第一次 invalid 当作最终交付，而是保留原 attempt，创建下一条 `attempt_NN`，把具体 schema/validation 错误写入 `retry_context.json` 后重新派发。默认总共最多 3 个全新 attempt；只有预算耗尽才记录 `unresolved_after_retries`，且旧 attempt 不被覆盖。绑定/状态损坏和启动前失败也计为一次 attempt，不能无限复用同一失败目录；`--finalize` 仅在全量 `validated` 时返回 0。
 
 分片合法不等于整体结果合法；最终检查还会核对引用、责任模块、标签、恢复机会、目标和处置的一致性。`validated`表示程序检查通过，归因准确率需另与人工GT比较。
 

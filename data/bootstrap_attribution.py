@@ -480,6 +480,7 @@ def run_prepared(args) -> int:
     command = [
         sys.executable, str(RUN_BATCH), "--manifest", str(manifest),
         "--out", str(batch_out), "--jobs", str(args.jobs), "--wall", str(args.wall),
+        "--max-attempts", str(getattr(args, "max_attempts", 3)),
     ]
     if args.case_ids:
         command += ["--cases", *args.case_ids]
@@ -526,6 +527,7 @@ def parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--case-id", dest="case_ids", action="append")
     run_parser.add_argument("--jobs", type=int, choices=range(1, 6), default=1)
     run_parser.add_argument("--wall", type=int, default=3600)
+    run_parser.add_argument("--max-attempts", type=int, choices=range(1, 11), default=3)
     run_parser.add_argument("--resume", action="store_true")
     run_parser.add_argument("--stop-on-invalid", action="store_true")
     run_parser.set_defaults(handler=run_prepared)

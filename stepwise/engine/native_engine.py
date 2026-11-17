@@ -14,6 +14,7 @@ from framework_architecture import install_framework_architecture,resolve_framew
 from study.materials import EvidenceStore
 from responses_transport import forward_responses,route_request
 import platform_runtime
+import normalization as canonical_normalization
 DEFAULT_MODEL='deepseek-v4.1-flash'
 current_runtime=platform_runtime.current_runtime
 DERIVED_ROOT='derived_views'
@@ -360,97 +361,22 @@ INFRA_PAT = _re.compile(r'failed to create session|native mxc is unavailable|fai
                         r'502 bad gateway|tunnel connection failed|bad gateway|connection reset by peer|'
                         r'sandbox-exec|sandbox_apply|seatbelt', _re.I)
 def normalize_refs(prediction):
- """删掉引用了不存在 evidence id 的位置；success 时恢复机会置 not_applicable。"""
- evs=prediction.get('evidence') or []
- known={e.get('id') for e in evs if isinstance(e,dict)}
- def _clean(node):
-  if isinstance(node,dict):
-   for k,v in list(node.items()):
-    if k=='evidence_ids' and isinstance(v,list):
-     node[k]=[x for x in v if x in known]
-    else:_clean(v)
-  elif isinstance(node,list):
-   for x in node:_clean(x)
- _clean(prediction)
- if ((prediction.get('outcome') or {}).get('decision'))=='success':
-  ro=prediction.get('recovery_opportunity')
-  if isinstance(ro,dict):
-   for k in ('exists','attempted','outcome'):
-    if k in ro:ro[k]='not_applicable'
- return prediction
+ return canonical_normalization.normalize_refs(prediction)
 
 def normalize_locator(prediction,case=None):
- """locator 里的每个文件名都必须与来源一致；不一致的删掉，只留匹配项与区域描述。
-
- wire 层 evidence 用的是 source_id（Sxxxx），不是 source 路径。
- 早期版本只读 ev['source']，取不到就 continue，等于这条归一化从未生效。
- 现在先用 case.inventory 把 source_id 映射回真实来源路径。
- """
- sid2src={}
- for e in (case or {}).get('inventory') or []:
-  sid=e.get('source_id');s=e.get('source')
-  if sid and s:sid2src[sid]=s
- pattern=_re.compile(r'(?<![\w.\-/\\])[\w\-]+(?:[/\\][\w\-]+)*\.(?:png|jpe?g|webp|json|txt|log)(?![\w.])',_re.I)
- for ev in prediction.get('evidence') or []:
-  loc=ev.get('locator');src=str(ev.get('source') or sid2src.get(ev.get('source_id')) or '')
-  if not isinstance(loc,str) or not loc:continue
-  if not src:continue
-  canonical=src.replace('\\','/')
-  names={canonical}|{canonical.rsplit('/',1)[-1]}
-  def _keep(m):
-   name=m.group(0).replace('\\','/').lstrip('./')
-   return m.group(0) if (canonical==name or canonical.endswith('/'+name) or name in names) else ''
-  fixed=pattern.sub(_keep,loc)
-  cleaned=' '.join(fixed.split())
-  ev['locator']=cleaned or canonical
- return prediction
+ return canonical_normalization.normalize_locator(prediction,case)
 
 def normalize_steps(prediction,case):
- """evidence.step 以清单登记的来源步号为准；清单未登记（如图片）则不改。"""
- inv={}
- for e in case.get('inventory') or []:
-  sid=e.get('source_id'); st=e.get('step')
-  if sid and st is not None:inv[sid]=st
- for ev in prediction.get('evidence') or []:
-  sid=ev.get('source_id')
-  if sid in inv:ev['step']=inv[sid]
- return prediction
+ return canonical_normalization.normalize_steps(prediction,case)
 
 def normalize_actors(node):
- """把 actor 类字段统一成小写：Manager/manager 视为同一实体，属序列化差异。"""
- if isinstance(node,dict):
-  for k,v in list(node.items()):
-   if k in ('responsible_actor','actor') and isinstance(v,str) and v:
-    node[k]=v.strip().lower()
-   else:
-    normalize_actors(v)
- elif isinstance(node,list):
-  for x in node:normalize_actors(x)
- return node
+ return canonical_normalization.normalize_actors(node)
 
 def normalize_labels(prediction):
-    """hierarchy 模板要求 labels 内 module/function/mechanism/object 显式 null。
-
-    模型经常只写 l1/l2/l3 就交，schema 的 required 会整体拒收。
-    output-contract 明确 hierarchy 模板下这四个要素应为 null，
-    所以这里只"补 null 键"，不填任何取值，也不覆盖模型已给的值。
-    """
-    att = prediction.get('attribution') or {}
-    if not isinstance(att, dict):
-        return prediction
-    for name in ('initial', 'recovery'):
-        node = att.get(name)
-        if not isinstance(node, dict):
-            continue
-        labels = node.get('labels')
-        if not isinstance(labels, dict):
-            continue
-        for field in ('module', 'function', 'mechanism', 'object'):
-            labels.setdefault(field, None)
-    return prediction
+ return canonical_normalization.normalize_labels(prediction)
 
 
-def finish(out,case,skill,protocol,raw,receipt,meta):
+def finish(out,case,skill,protocol,raw,receipt,meta,evidence_root=None):
  try:
   prediction,parse_audit=parse_wire_json(raw);atomic(out/'first_prediction.json',prediction)
   from normalization_audit import changes
@@ -466,8 +392,11 @@ def finish(out,case,skill,protocol,raw,receipt,meta):
   normalization['compile_edits']=changes(prediction,protocol.project(result))
   atomic(out/'normalization_audit.json',normalization)
   meta['normalization_changed']=bool(normalization['deterministic_edits'] or normalization['compile_edits'])
-  errors=validator(skill).validate_result(result,references=skill/'references',evidence_root=Path(case['evidence_root']),access_receipt=out/'access_receipt.json')
-  schema_errors=[e.message for e in Draft202012Validator(protocol.wire_schema()).iter_errors(prediction)]
+  errors=validator(skill).validate_result(result,references=skill/'references',evidence_root=Path(evidence_root or case['evidence_root']),access_receipt=out/'access_receipt.json')
+  # compile() already pruned undeclared fields and validated the wire contract.
+  # Revalidating the pre-pruning prediction would reject a result that the
+  # canonical protocol just accepted; validate the projected result instead.
+  schema_errors=[e.message for e in Draft202012Validator(protocol.wire_schema()).iter_errors(protocol.project(result))]
   meta.update(state='validated' if not errors and not schema_errors else 'invalid',schema_errors=schema_errors,validation_errors=errors,parse_audit=parse_audit)
  except Exception as e:meta.update(state=('infra_failed' if INFRA_PAT.search(str(e)) else 'invalid'),error=type(e).__name__+': '+str(e)[:1800])
  atomic(out/'status.json',meta);return meta
@@ -513,7 +442,13 @@ def run_native(case,skill,sm,protocol,store,out,wall=850,*,command,endpoint,key,
     if len(current)+len(marker)>18000:flush()
     current+=marker;members.append(fragment)
  flush()
- index={'identity':case['identity'],'available_steps':case['available_steps'],'sources':case['inventory'],'log_pages':[{'path':x['path'],'characters':len(x['text'])} for x in pages], 'images':[{'path':e['source'],'source_id':e['source_id']} for e in case['inventory'] if e['kind']=='image'],'normalization':'Original textual fields retained. In-log binary attachments outside the website gallery are replaced deterministically by the shared existing reader. Every named image has the existing q85 bytes at original dimensions.'}
+ index={'identity':case['identity'],'available_steps':case['available_steps'],'sources':case['inventory'],
+        'log_pages':[{'path':x['path'],'characters':len(x['text']),
+                      'members':[{'source_id':m['entry']['source_id'],'offset':m['offset'],
+                                  'end':m['end'],'total':m['total']} for m in x['members']]}
+                     for x in pages],
+        'images':[{'path':e['source'],'source_id':e['source_id']} for e in case['inventory'] if e['kind']=='image'],
+        'normalization':'Original textual fields retained. In-log binary attachments outside the website gallery are replaced deterministically by the shared existing reader. Every named image has the existing q85 bytes at original dimensions.'}
  if framework_knowledge:index['framework_knowledge']=framework_knowledge
  if framework_architecture:index['framework_architecture']=framework_architecture
  (w/'input_index.json').write_text(json.dumps(index,ensure_ascii=False,indent=2),encoding='utf8')
@@ -596,6 +531,8 @@ def run_native(case,skill,sm,protocol,store,out,wall=850,*,command,endpoint,key,
  cmd=command+['exec','--ignore-user-config','--skip-git-repo-check']+runtime.approval_args()+['--json','-C',str(w),'-m',model,'-o',str(out/'answer.txt')]
  read_roots=[Path(sys.executable).resolve().parent,Path(sys.prefix).resolve(),Path(getattr(sys,'base_prefix',sys.prefix)).resolve()] if not runtime.is_windows() else []
  if not runtime.is_windows():read_roots.extend(command_read_roots(command))
+ # The submission helper checks tickets, native receipt and bridge audit in the attempt root.
+ read_roots.append(Path(out).resolve())
  opts={'model_provider':'d60_company','model_providers.d60_company.name':'Attribution recorder; explicit same-model approval surrogate','model_providers.d60_company.base_url':f'http://127.0.0.1:{server.server_port}/v1','model_providers.d60_company.env_key':'D60_LOCAL_KEY','model_providers.d60_company.wire_api':'responses','model_providers.d60_company.requires_openai_auth':False,'model_providers.d60_company.request_max_retries':1,'model_providers.d60_company.stream_max_retries':1,'model_providers.d60_company.stream_idle_timeout_ms':650000,'tool_output_token_limit':50000,'features.enable_request_compression':False,'features.skip_host_skill_discovery':True,'features.plugins':False,'features.remote_plugin':False,'features.multi_agent':False}
  if reasoning_effort is not None:opts['model_reasoning_effort']=reasoning_effort
  runtime_dep=os.environ.get('CODEX_RUNTIME_DEP') if runtime.is_windows() else None

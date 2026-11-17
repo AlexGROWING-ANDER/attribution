@@ -44,6 +44,24 @@ def session_lock(out):
         lock.unlink()
 
 
+def staged_inventory(case):
+    """Map the frozen index hashes to the bytes actually delivered in the workspace."""
+    deliveries = {image["source_id"]: image for image in case["images"]}
+    inventory = []
+    for entry in case["inventory"]:
+        if entry["kind"] == "image":
+            image = deliveries[entry["source_id"]]
+            inventory.append({
+                **entry,
+                "source_sha256": entry["sha256"],
+                "sha256": image["delivery_sha256"],
+                "delivery_sha256": image["delivery_sha256"],
+            })
+        else:
+            inventory.append(entry)
+    return inventory
+
+
 def stage_workspace(case, skill, sm, protocol, store, out):
     w = out / "workspace"
     w.mkdir()
@@ -73,6 +91,9 @@ def stage_workspace(case, skill, sm, protocol, store, out):
       image_paths[str(dst.resolve()).casefold()]=entry;sources_by_id[e['source_id']]=entry
      else:
       sources_by_id[e['source_id']]=e
+      source_path=Path(case['evidence_root'])/e['source']
+      if not source_path.is_file():raise ValueError('Evidence source is missing: '+e['source'])
+      dst=w/e['source'];dst.parent.mkdir(exist_ok=True,parents=True);shutil.copyfile(source_path,dst)
       blocks,_=store.read(e['source_id']);t='\n'.join(b['text'] for b in blocks if b['type']=='text')
       # Split very long file text into deterministic ranges; record complete coverage only
       # when every range, not merely a read invocation, reaches the main model.
@@ -82,7 +103,13 @@ def stage_workspace(case, skill, sm, protocol, store, out):
        if len(current)+len(marker)>18000:flush()
        current+=marker;members.append(fragment)
     flush()
-    index={'identity':case['identity'],'available_steps':case['available_steps'],'sources':case['inventory'],'log_pages':[{'path':x['path'],'characters':len(x['text'])} for x in pages], 'images':[{'path':e['source'],'source_id':e['source_id']} for e in case['inventory'] if e['kind']=='image'],'normalization':'Original textual fields retained. In-log binary attachments outside the website gallery are replaced deterministically by the shared existing reader. Every named image has the existing q85 bytes at original dimensions.'}
+    index={'identity':case['identity'],'available_steps':case['available_steps'],'sources':staged_inventory(case),
+           'log_pages':[{'path':x['path'],'characters':len(x['text']),
+                         'members':[{'source_id':m['entry']['source_id'],'offset':m['offset'],
+                                     'end':m['end'],'total':m['total']} for m in x['members']]}
+                        for x in pages],
+           'images':[{'path':e['source'],'source_id':e['source_id']} for e in case['inventory'] if e['kind']=='image'],
+           'normalization':'Original textual fields retained. In-log binary attachments outside the website gallery are replaced deterministically by the shared existing reader. Every named image has the existing q85 bytes at original dimensions.'}
     if framework_knowledge:index['framework_knowledge']=framework_knowledge
     if framework_architecture:index['framework_architecture']=framework_architecture
     (w/'input_index.json').write_text(json.dumps(index,ensure_ascii=False,indent=2),encoding='utf8')
@@ -91,10 +118,16 @@ def stage_workspace(case, skill, sm, protocol, store, out):
     return pages, index
 
 
-def prepare_case(loaded, out, binding):
+def prepare_case(loaded, out, binding, retry_context=None):
     case, _, skill, sm, protocol, store = loaded
     out = Path(out).resolve()
     out.mkdir(parents=True, exist_ok=False)
+    if retry_context is not None:
+        if (not isinstance(retry_context, dict)
+                or retry_context.get("schema") != "flux-retry-context-v1"
+                or retry_context.get("case_id") != case["case_id"]):
+            raise ValueError("Retry context does not belong to the selected case")
+        atomic_json(out / "retry_context.json", retry_context)
     pages, index = stage_workspace(case, skill, sm, protocol, store, out)
     workspace = out / "workspace"
     resources = {}
@@ -118,18 +151,29 @@ def prepare_case(loaded, out, binding):
                "resources": resources, "frozen_workspace": frozen,
                "receipt_assurance": ASSURANCE}
     atomic_json(out / "flux_session.json", session)
-    atomic_json(out / "input_binding.json", {
+    binding_record = {
         **binding, "case_id": case["case_id"],
         "session_sha256": sha(out / "flux_session.json"),
         "prompt_sha256": sha(out / "prompt.txt"),
         "execution_backend": "flux_native",
-    })
+    }
+    if retry_context is not None:
+        binding_record.update(
+            retry_of=retry_context.get("previous_attempt"),
+            retry_context_sha256=sha(out / "retry_context.json"),
+            attempt_index=retry_context.get("attempt_index"),
+        )
+    atomic_json(out / "input_binding.json", binding_record)
     task = render_task(out)
     (out / "flux_task.md").write_text(task, encoding="utf-8")
     status = {"case_id": case["case_id"], "state": "ready_for_flux",
               "execution_backend": "flux_native", "inference_started": False,
               "task_path": str(out / "flux_task.md"),
               "receipt_assurance": ASSURANCE}
+    if retry_context is not None:
+        status.update(attempt_index=retry_context.get("attempt_index"),
+                      retry_of=retry_context.get("previous_attempt"),
+                      retry_max_attempts=retry_context.get("max_attempts"))
     atomic_json(out / "status.json", status)
     return status
 
@@ -149,6 +193,12 @@ def validate_session(out):
         raise ValueError("Flux session registry changed")
     if sha(out / "prompt.txt") != binding["prompt_sha256"]:
         raise ValueError("Prepared attribution prompt changed")
+    if binding.get("retry_context_sha256"):
+        context_path = out / "retry_context.json"
+        if not context_path.is_file() or sha(context_path) != binding["retry_context_sha256"]:
+            raise ValueError("Retry context changed")
+        if read_json(context_path).get("case_id") != binding["case_id"]:
+            raise ValueError("Retry context identity mismatch")
     session = read_json(out / "flux_session.json")
     if session.get("schema") != SCHEMA or session.get("case_id") != binding["case_id"]:
         raise ValueError("Flux session identity mismatch")
@@ -261,7 +311,7 @@ def delivery_receipt(out, session, loaded):
         if item["kind"] == "image":
             entry = item["entry"]
             events[entry["source"]] = {
-                "source": entry["source"], "sha256": entry["sha256"],
+                "source": entry["source"], "sha256": item["sha256"],
                 "operation": "deliver_image", "success": True,
                 "content_complete": True, "truncated": False,
                 "delivery_sha256": item["sha256"],
@@ -289,6 +339,7 @@ def delivery_receipt(out, session, loaded):
                        for record, item in confirmed if item["kind"] == "derived_image"],
     })
     receipt = store.receipt(list(events.values()))
+    receipt["inventory"] = read_json(Path(out) / "workspace/input_index.json")["sources"]
     receipt.update(confirmation_producer="flux_agent", execution_backend="flux_native",
                    receipt_assurance=ASSURANCE,
                    meaning="Agent confirms completed native tool presentation. "
@@ -322,21 +373,37 @@ def finalize_case(out):
                 "required_images": case["image_count"],
                 "prompt_version": engine.PROMPT_VERSION, "post_validator_model_repair": False,
                 "isolation": "scoped_workspace; native platform permissions inherited"}
+        for key in ("attempt_index", "retry_of", "retry_max_attempts"):
+            if prior.get(key) is not None:
+                meta[key] = prior[key]
         try:
             prediction = engine.assemble(workspace, case, receipt)
         except Exception as exc:
             meta.update(state="invalid", error="Step assembly: " + str(exc))
             atomic_json(out / "status.json", meta)
             return meta
-        return engine.finish(out, case, skill, protocol, json.dumps(prediction, ensure_ascii=False), receipt, meta)
+        return engine.finish(out, case, skill, protocol, json.dumps(prediction, ensure_ascii=False), receipt, meta,
+                             evidence_root=workspace)
 
 
 def render_task(out):
     facade = REPO / "stepwise/engine/flux_execution.py"
+    retry = ""
+    if (Path(out) / "retry_context.json").is_file():
+        retry = f"""
+## 自动重试上下文
+
+本 attempt 是自动重试。开始分析前完整读取 `{Path(out) / 'retry_context.json'}`；
+其中只有上一 attempt 的校验错误摘要和修复提示，没有上一轮预测。不要读取或复制
+上一 attempt 目录下的 result.json、判断文件或其他历史预测。必须从本 attempt 的
+原始材料、冻结 Skill 和 Prompt 重新完成全部分析、checkpoint、逐 step 提交和全局汇总。
+上一轮列出的每个错误都必须在本地 `io.py check` 中消失后才能回复 DONE。
+"""
     return f"""# Flux 原生归因执行任务
 
 仅处理当前案例，工作区为 `{out / 'workspace'}`。继承 Flux 原生会话能力，不指定模型，
 不启动模型 CLI、不请求模型 API、不读取登录文件或凭证。不要访问 GT、其他案例或历史预测。
+{retry}
 完整读取工作区内 `.agents/skills/gui-trajectory-attribution/SKILL.md` 并按原 Skill 分析。
 完整读取 `{out / 'prompt.txt'}`，严格遵循其中的 checkpoint、逐步提交和全局汇总顺序。
 原始归因算法、Prompt、标签、Schema 和 io.py 保持原样。
@@ -358,7 +425,9 @@ ticket 是本地确认关联编号，不冒充平台工具编号。截图未展�
 
 io.py 提交顺序及读取的页面/图库范围仍由原 submission_protocol.md 和 step_index.json 定义。
 若使用 io.py derive 的受控视图，先确认原图库图像送达，派生图不能计入图库覆盖。
-单案例最多两个原始证据重查批次；本地 check 通过后不自行运行严格最终校验器。
+单案例最多两个原始证据重查批次。提交 global_summary 后必须运行本地 `io.py check`；
+被拒时按返回的具体错误改正并再次 check（最多三个修正循环），通过后才回复 DONE。
+本地 check 通过后不自行运行严格最终校验器。
 完成后只回复 DONE；否则报告具体阻塞。最终组装、覆盖率计算和严格校验由父 Flux 任务执行。
 """
 

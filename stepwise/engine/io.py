@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -200,6 +201,65 @@ def require_fields(value, names) -> None:
     unexpected = actual - expected
     if unexpected:
         raise HelperError("Unexpected field " + sorted(unexpected)[0])
+
+
+def json_schema_path(error) -> str:
+    path = "$"
+    for part in error.absolute_path:
+        path += f"[{part}]" if isinstance(part, int) else f".{part}"
+    return path
+
+
+def validate_payload_schema(payload, schema: dict, label: str) -> None:
+    errors = sorted(Draft202012Validator(schema).iter_errors(payload), key=json_schema_path)
+    if errors:
+        error = errors[0]
+        path = json_schema_path(error)
+        if error.validator == "additionalProperties":
+            match = re.search(r"'([^']+)' was unexpected", error.message)
+            if match is not None:
+                path += f".{match.group(1)}"
+        raise HelperError(f"{label} schema {path}: {error.message}")
+
+
+def load_preflight():
+    path = WORK / ".preflight" / "preflight.py"
+    if not path.is_file():
+        return None
+    spec = importlib.util.spec_from_file_location("attribution_local_preflight", path)
+    if spec is None or spec.loader is None:
+        raise HelperError("Local strict preflight module cannot be loaded")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def require_runtime_marker() -> bool:
+    out = WORK.parent
+    binding = out / "input_binding.json"
+    if binding.is_file():
+        try:
+            if read_json(binding).get("execution_backend") == "flux_native":
+                return True
+        except (OSError, ValueError):
+            pass
+    launch = out / "launch.json"
+    if launch.is_file():
+        try:
+            if read_json(launch).get("family") == "native_d60":
+                return True
+        except (OSError, ValueError):
+            pass
+    return False
+
+
+def require_delivered_images(index: dict, evidence: list[dict]) -> None:
+    preflight = load_preflight()
+    if preflight is None:
+        if require_runtime_marker():
+            raise HelperError("Local strict preflight support is missing; rerun workspace preparation")
+        return
+    preflight.assert_cited_images_delivered(WORK, index, evidence)
 
 
 def references(value):
@@ -502,6 +562,7 @@ def submit_step(index: dict, payload: dict) -> dict:
     if step != pending[0]:
         raise HelperError(f"Current required step is {pending[0]}")
     check_step_value(payload, step, known_sources(index))
+    require_delivered_images(index, payload["evidence"])
     save_json(WORK / "step_judgments" / f"step_{step:03d}.json", payload)
     ids = [f"E{step:02d}_{index}" for index in range(1, len(payload["evidence"]) + 1)]
     log_event("step", True, f"Saved step {step}")
@@ -526,6 +587,7 @@ def submit_global(index: dict, payload: dict) -> dict:
     if not isinstance(required, list):
         raise HelperError("global_summary.schema.json has no required list")
     require_fields(payload, required)
+    validate_payload_schema(payload, schema, "global summary")
     align_checkpoint_goals(checkpoint_plan, payload.get("goals"))
     check_global_goal_observability(payload, evidence_kinds)
     save_json(WORK / "global_summary.json", payload)
@@ -537,6 +599,8 @@ def check_global(index: dict) -> dict:
     checkpoint_plan, _ = require_checkpoint_submission(index)
     steps = require_all_steps_complete(index)
     global_summary = read_json(WORK / "global_summary.json")
+    schema = read_json(WORK / "global_summary.schema.json")
+    validate_payload_schema(global_summary, schema, "global summary")
     evidence_kinds = checked_evidence_kinds(index, steps)
     ids = list(evidence_kinds)
     bad = sorted({ref for ref in references(global_summary) if ref not in ids})
@@ -544,8 +608,19 @@ def check_global(index: dict) -> dict:
         raise HelperError("Unknown evidence refs: " + ",".join(bad))
     align_checkpoint_goals(checkpoint_plan, global_summary.get("goals"))
     check_global_goal_observability(global_summary, evidence_kinds)
-    log_event("check", True, "Local JSON and reference check; final strict validator not invoked")
-    return {"ok": True, "steps": len(steps), "evidence_ids": len(ids), "strict_validation": "caller_only"}
+    preflight = load_preflight()
+    if preflight is None:
+        if require_runtime_marker():
+            raise HelperError("Local strict preflight support is missing; rerun workspace preparation")
+        detail = "Local structural check; strict preflight bundle not staged"
+        strict = "structural_only"
+    else:
+        preflight.assert_gallery_delivered(WORK, index)
+        preflight.strict_preflight(WORK, index)
+        detail = "Local strict schema, delivery and semantic preflight passed"
+        strict = "local_preflight"
+    log_event("check", True, detail)
+    return {"ok": True, "steps": len(steps), "evidence_ids": len(ids), "strict_validation": strict}
 
 
 def main() -> int:

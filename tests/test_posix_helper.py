@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import importlib.util
 import json
 from pathlib import Path
 import shutil
@@ -178,6 +179,13 @@ class PythonRevisionPrecheckTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(len(protocol.assemble(self.workspace, self.case, self.receipt)["evidence"]), 2)
 
+    def test_preflight_assembly_can_avoid_writing_outside_the_workspace(self):
+        audit = self.workspace.parent / "stepwise_assembly_audit.json"
+        audit.unlink(missing_ok=True)
+        result = protocol.assemble(self.workspace, self.case, self.receipt, write_audit=False)
+        self.assertEqual(len(result["evidence"]), 2)
+        self.assertFalse(audit.exists())
+
     def test_addition_preserves_ids_and_allows_json_key_reordering(self):
         revised = copy.deepcopy(self.original)
         revised["summary"] = "Rechecked observation"
@@ -287,6 +295,139 @@ class PythonRevisionPrecheckTests(unittest.TestCase):
         for mode, value in (("global", payload), ("check", None)):
             result = self.invoke(mode, value)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+
+class PythonStrictGateTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.attempt = Path(self.temp.name) / "attempt_01"
+        self.workspace = self.attempt / "workspace"
+        self.workspace.mkdir(parents=True)
+        shutil.copyfile(ROOT / "stepwise/engine/io.py", self.workspace / "io.py")
+        self.plan = {
+            "schema": "case-checkpoint-plan-v1", "case_id": "synthetic",
+            "basis": ["instruction", "identity", "task_policy"],
+            "checkpoints": [{
+                "id": "CP1", "type": "goal", "object": "Synthetic object",
+                "requirement": "Synthetic requirement", "required": True,
+                "depends_on": [], "acceptance": "Synthetic acceptance",
+                "evidence_expectation": ["screenshot"],
+            }],
+        }
+        save(self.workspace / "checkpoint_plan.schema.json", protocol.CHECKPOINT_SCHEMA)
+        save(self.workspace / "checkpoint_plan.json", self.plan)
+        plan_sha = hashlib.sha256((self.workspace / "checkpoint_plan.json").read_bytes()).hexdigest()
+        (self.workspace / "io_events.jsonl").write_text(json.dumps({
+            "at": 1, "mode": "checkpoint", "accepted": True,
+            "detail": "Saved checkpoint plan sha256=" + plan_sha,
+        }) + "\n", encoding="utf-8")
+        save(self.workspace / "input_index.json", {
+            "identity": {"id": "synthetic", "attempt": "synthetic"},
+            "available_steps": [1],
+            "sources": [{"source_id": "S0001", "source": "step_1/log.json", "kind": "log", "step": 1}],
+            "log_pages": [],
+        })
+        save(self.workspace / "step_judgments/step_001.json", {
+            "step": 1, "verdict": "uncertain", "summary": "Synthetic",
+            "evidence": [{"source_id": "S0001", "phase": "decision", "locator": "response",
+                          "observation": "Synthetic output"}],
+        })
+        self.schema = {
+            "type": "object", "additionalProperties": False,
+            "required": ["decision", "goals"],
+            "properties": {
+                "decision": {"enum": ["pending"]},
+                "goals": {"type": "array", "items": {
+                    "type": "object", "additionalProperties": False,
+                    "required": ["id", "object", "requirement", "status"],
+                    "properties": {
+                        "id": {"type": "string"}, "object": {"type": "string"},
+                        "requirement": {"type": "string"}, "status": {"enum": ["unknown"]},
+                        "evidence_ids": {"type": "array", "items": {"type": "string"}},
+                    },
+                }},
+            },
+        }
+        save(self.workspace / "global_summary.schema.json", self.schema)
+        save(self.workspace / "global_summary.json", self.global_payload())
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def global_payload(self):
+        return {"decision": "pending", "goals": [{
+            "id": "CP1", "object": "Synthetic object",
+            "requirement": "Synthetic requirement", "status": "unknown",
+        }]}
+
+    def invoke(self, mode: str, payload: dict | None = None) -> subprocess.CompletedProcess:
+        command = [sys.executable, str(self.workspace / "io.py"), mode]
+        if payload is not None:
+            command += ["--json", json.dumps(payload, ensure_ascii=False)]
+        return subprocess.run(command, capture_output=True, text=True, encoding="utf-8",
+                              errors="replace", timeout=20)
+
+    def test_global_schema_rejects_nested_extra_field(self):
+        payload = self.global_payload()
+        payload["goals"][0]["extra"] = True
+        result = self.invoke("global", payload)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("global summary schema $.goals[0].extra", result.stderr)
+
+    def test_check_invokes_strict_preflight_before_accepting(self):
+        preflight_dir = self.workspace / ".preflight"
+        preflight_dir.mkdir()
+        module = preflight_dir / "preflight.py"
+        module.write_text(
+            "def assert_gallery_delivered(workspace, index):\n    return None\n"
+            "def strict_preflight(workspace, index):\n    raise RuntimeError('semantic preflight rejected')\n",
+            encoding="utf-8",
+        )
+        rejected = self.invoke("check")
+        self.assertNotEqual(rejected.returncode, 0)
+        self.assertIn("semantic preflight rejected", rejected.stderr)
+        events = [json.loads(line) for line in (self.workspace / "io_events.jsonl").read_text().splitlines()]
+        self.assertFalse(any(event["mode"] == "check" and event["accepted"] for event in events))
+
+        module.write_text(
+            "def assert_gallery_delivered(workspace, index):\n    return None\n"
+            "def strict_preflight(workspace, index):\n    return {'decision': 'pending'}\n",
+            encoding="utf-8",
+        )
+        accepted = self.invoke("check")
+        self.assertEqual(accepted.returncode, 0, accepted.stdout + accepted.stderr)
+        self.assertIn("local_preflight", accepted.stdout)
+        events = [json.loads(line) for line in (self.workspace / "io_events.jsonl").read_text().splitlines()]
+        self.assertTrue(any(event["mode"] == "check" and event["accepted"] for event in events))
+
+    def test_confirmed_ticket_is_required_before_citing_an_image(self):
+        spec = importlib.util.spec_from_file_location(
+            "test_local_preflight", ROOT / "stepwise/engine/preflight.py"
+        )
+        preflight = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(preflight)
+        save(self.attempt / "input_binding.json", {"execution_backend": "flux_native"})
+        image = self.workspace / "images/frame.png"
+        image.parent.mkdir()
+        image.write_bytes(b"synthetic-image-bytes")
+        index = {
+            "identity": {"id": "synthetic", "attempt": "synthetic"},
+            "available_steps": [1],
+            "sources": [{
+                "source_id": "S0001", "source": "images/frame.png", "kind": "image",
+                "sha256": hashlib.sha256(image.read_bytes()).hexdigest(), "step": 1,
+            }],
+            "log_pages": [],
+        }
+        with self.assertRaisesRegex(ValueError, "Undelivered cited images: S0001"):
+            preflight.assert_cited_images_delivered(self.workspace, index, [{"source_id": "S0001"}])
+        ticket = "a" * 32
+        save(self.attempt / "delivery_tickets" / (ticket + ".json"), {
+            "ticket": ticket, "resource": "S0001", "kind": "image",
+            "sha256": hashlib.sha256(image.read_bytes()).hexdigest(), "confirmed": True,
+            "native_tool": "view_image", "tool_ref": "native-call-1",
+        })
+        preflight.assert_cited_images_delivered(self.workspace, index, [{"source_id": "S0001"}])
 
 
 class PythonDerivedViewTests(unittest.TestCase):

@@ -25,7 +25,7 @@
 - 全量材料与步骤齐全后，按Skill完成综合判断与收尾复核；重大疑点最多两批定向回查，不重新通读全轨迹
 - 新直接观察可追加到revision_NNN.json；原步骤、verdict和证据前缀不变，并说明追加内容
 - 全局结果通过global模式提交，不重复由调用方生成的evidence、process、coverage和完整result.json
-- 最后运行一次基础check；被拒时允许一次针对修正和一次复查，保留原步骤。调用方完成后严格校验一次，不向模型反馈回修
+- 提交全局结果后运行本地严格check；被拒时按具体错误修正并复查，最多三个修正循环，保留原步骤。调用方最终校验失败时自动创建新attempt并反馈具体错误，旧attempt不覆盖
 - 文件及材料齐全、本地检查通过后仅回复DONE；否则说明阻塞。局部纠正和规范化另行记录
 
 完整英文工具命令及约定见stepwise/protocols/submission_protocol.md。

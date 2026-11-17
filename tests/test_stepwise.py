@@ -934,6 +934,9 @@ class PromptTests(unittest.TestCase):
             helper = prompt_builder.HELPER_NAME
             self.assertEqual((workspace / helper).read_bytes(), (ROOT / "stepwise/engine" / helper).read_bytes())
             self.assertEqual((workspace / "submission_protocol.md").read_bytes(), prompt_builder.RUNTIME.submission_protocol_bytes())
+            self.assertTrue((workspace / ".preflight/preflight.py").is_file())
+            self.assertTrue((workspace / ".preflight/references/output.schema.json").is_file())
+            self.assertTrue((workspace / ".preflight/harness/protocol.py").is_file())
 
     def test_startup_routes_to_skill_and_staged_protocol(self):
         prompt = protocol.render_prompt({"id": "synthetic"})
@@ -1060,6 +1063,25 @@ class NormalizationAuditTests(unittest.TestCase):
             self.assertTrue(status["normalization_changed"])
             self.assertIn("$.goals[0].evidence_ids", {entry["path"] for entry in audit["deterministic_edits"]})
             self.assertIn("$.recovery_opportunity.exists", {entry["path"] for entry in audit["deterministic_edits"]})
+
+    def test_finish_validates_the_projected_result_not_pruned_input(self):
+        prediction = {"x": "ok", "extra": True}
+        pruned = {"x": "ok"}
+        class FakeProtocol:
+            def compile(self, raw): return copy.deepcopy(pruned)
+            def project(self, result): return copy.deepcopy(result)
+            def wire_schema(self):
+                return {"type": "object", "additionalProperties": False,
+                        "properties": {"x": {"type": "string"}}, "required": ["x"]}
+        class FakeValidator:
+            def validate_result(self, *args, **kwargs): return []
+        with tempfile.TemporaryDirectory() as root:
+            out = Path(root)
+            with patch.object(ENGINE, "validator", return_value=FakeValidator()):
+                status = ENGINE.finish(out, {"inventory": [], "evidence_root": root}, Path(root), FakeProtocol(),
+                                       json.dumps(prediction), {}, {})
+            self.assertEqual(status["state"], "validated")
+            self.assertEqual(status["schema_errors"], [])
 
 
 if __name__ == "__main__":
